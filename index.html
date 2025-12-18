@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Thermocouple Serial Reader</h1>
+    <button id="choose-port">Choose Serial Port</button>
+
+    <pre id="output"></pre>
+
+
+    <h2>Active Thermocouples</h2>
+    <div id="active-tcs">None</div>
+
+    <h2>Select Thermocouple</h2>
+    <pre id="selected-tc-output"></pre>
+
+    <input type="text" id="active-tcs-input" placeholder="Enter TC number, e.g. 1">
+    <button id="send-selection-btn">Send Thermocouple</button>
+    <div id="error-msg" style="color:red;"></div>
+    <pre id="tc-data"></pre>
+
+
+    <div id="tc-position-box">
+    <h3>Thermocouple Position</h3>
+
+    <div>X: <input id="tc-x" type="number" step="0.01"></div>
+    <div>Y: <input id="tc-y" type="number" step="0.01"></div>
+    <div>Z: <input id="tc-z" type="number" step="0.01"></div>
+
+    <button id="save-tc-pos">Save Position</button>
+    </div>
+
+    <button id="finished-calibration-btn">Finished Calibration</button>
+
+    <pre id="tc-data-all"></pre>
+
+    <script type="module" src="js/main.js"></script>
+
+    <div id="three-container" style="width: 100%; height: 500px;"></div>
+
+</body>
+</html>
+
+
