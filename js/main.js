@@ -60,7 +60,7 @@ class Thermocouple {
 let activeTcsArray = []; // will store MCU active TCs
 
 
-// Add this helper function somewhere at the top of your JS
+// Delay fcn  
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -166,7 +166,7 @@ async function startReaderLoop() {
         for (let line of lines) {
             line = line.trim();
 
-            if (line === "init fcn executed") initExecuted = true;
+            if (line === "init_executed") initExecuted = true;
 
             if (initExecuted && line.startsWith("Active TCs:")) {
                 const numbers = line.match(/\d+/g);
@@ -180,7 +180,7 @@ async function startReaderLoop() {
                         }
                     }
 
-                    syncTcMeshes();
+                    //syncTcMeshes();
                 }
             }
 
@@ -324,6 +324,9 @@ if (savedTcs) {
 
     console.log("Restored thermocouples from storage:", thermocouples);
 }
+
+
+
 
 function initThreeScene() {
     const container = document.getElementById('three-container');

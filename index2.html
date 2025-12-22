@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heat Cube - Thermocouple Visualizer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🔥 Heat Cube Visualizer</h1>
+
+        <!-- Timeline Controls -->
+        <div id="timeline-controls" style="display: none;">
+            <label style="font-weight: 600;">⏱ Time: <span id="timeline-label">Live</span></label>
+            <input type="range" id="timeline-slider" min="0" max="0" value="0" step="1">
+            <button id="jump-live">Jump to Live</button>
+        </div>
+
+        <!-- Main Layout: Control Panel + 3D Viewer -->
+        <div class="main-layout">
+            <!-- Control Panel -->
+            <div class="control-panel">
+                <!-- Port Connection -->
+                <div class="control-section">
+                    <h2>📡 Connection</h2>
+                    <button id="choose-port">Choose Serial Port</button>
+                    <button id="status-btn">Check Status</button>
+                    <div id="status-output"></div>
+                </div>
+
+                <!-- Thermocouple Selection -->
+                <div class="control-section">
+                    <h2>🌡️ Thermocouple</h2>
+                    <select id="active-tcs-dropdown">
+                        <option value="" disabled selected>Select Thermocouple</option>
+                    </select>
+                    <button id="send-selection-btn">Select Thermocouple</button>
+                    <div id="selected-tc"></div>
+                </div>
+
+                <!-- Live Data -->
+                <div class="control-section">
+                    <h2>📊 Live Data</h2>
+                    <div id="tc-data"></div>
+                </div>
+
+                <!-- Calibration -->
+                <div class="control-section">
+                    <h2>⚙️ Calibration</h2>
+                    <button id="finished-calibration-btn">Finished Calibration</button>
+                </div>
+            </div>
+
+            <!-- Viewer Panel (3D) -->
+            <div class="viewer-panel">
+                <div id="three-container" style="width: 100%; height: 100%;"></div>
+            </div>
+        </div>
+
+        <!-- Error Messages -->
+        <div id="error-msg"></div>
+
+        <!-- Hidden elements for compatibility -->
+        <pre id="selected-tc-output" style="display: none;"></pre>
+        <pre id="temperature-display" style="display: none;"></pre>
+    </div>
+
+    <script type="module" src="js/main2.js"></script>
+</body>
+</html>
+
+
