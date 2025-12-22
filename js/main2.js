@@ -38,6 +38,7 @@ function populateActiveTcsArray() {
         option.textContent = `TC ${tc.id}`;
         selector.appendChild(option);
     }
+    
 }
 
 
