@@ -1,3 +1,6 @@
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.module.js';
+import { OrbitControls } from './OrbitControls.js';
+
 const output = document.getElementById('status-output');
 const choosePortBtn = document.getElementById('choose-port');
 const sendSelectionBtn = document.getElementById('send-selection-btn');
@@ -6,10 +9,62 @@ const tcData = document.getElementById('tc-data');
 const finishedCalibrationBtn = document.getElementById('finished-calibration-btn');
 const statusBtn = document.getElementById('status-btn');
 
+const selector = document.getElementById('active-tcs-dropdown');
+
+const positionOutput = document.getElementById('position-tc');
+
+const setPositionBtn = document.getElementById('set-position-btn');
+const posXInput = document.getElementById('pos-x');
+const posYInput = document.getElementById('pos-y');
+const posZInput = document.getElementById('pos-z');
+
 
 let port = null;
 let writer = null;
 let reader = null;
+
+// Three.js globals
+let scene = null;
+let camera = null;
+let renderer = null;
+let controls = null;
+const tcObjects = {};
+const coldColor = new THREE.Color(0x0000ff);
+const hotColor = new THREE.Color(0xff0000);
+
+async function closeCurrentPort(sendRefresh = false) {
+    try {
+        if (writer && sendRefresh) {
+            await writer.write(new TextEncoder().encode("refresh\n"));
+        }
+    } catch (err) {
+        console.warn("Failed to send refresh before closing:", err);
+    }
+
+    if (reader) {
+        try {
+            await reader.cancel();
+        } catch (_) {}
+        try {
+            reader.releaseLock();
+        } catch (_) {}
+        reader = null;
+    }
+
+    if (writer) {
+        try {
+            writer.releaseLock();
+        } catch (_) {}
+        writer = null;
+    }
+
+    if (port) {
+        try {
+            await port.close();
+        } catch (_) {}
+        port = null;
+    }
+}
 
 class Thermocouple {
     constructor(id) {
@@ -30,7 +85,6 @@ class Thermocouple {
 let activeTcsArray = []; // will store MCU active TCs
 
 function populateActiveTcsArray() {
-    const selector = document.getElementById('active-tcs-dropdown');
     selector.innerHTML = '';
     for(const tc of activeTcsArray) {
         const option = document.createElement('option');
@@ -55,6 +109,7 @@ async function startReaderLoop() {
 
     const textStream = port.readable.pipeThrough(new TextDecoderStream());
     const localReader = textStream.getReader();
+    reader = localReader;
 
     let buffer = '';
     while (true) {
@@ -69,7 +124,7 @@ async function startReaderLoop() {
             for (let line of lines) {
                 line = line.trim();
                 console.log("MCU:", line);
-                output.textContent = line; // simple output display
+                // output.textContent = line; // simple output display
                 
                 if(line.startsWith("Active TCs:")) {
                     console.log("Detected Active TCs line.");
@@ -91,9 +146,9 @@ async function startReaderLoop() {
                     console.log("Active TCs Array:", activeTcsArray);
                     localStorage.setItem('thermocouples', JSON.stringify(activeTcsArray));
                     populateActiveTcsArray();
+                    syncTcMeshes();
+                    output.textContent = line; 
                 }
-
-
 
                 if(line.startsWith("TC_Probe")) {
                     tcData.textContent = line
@@ -115,6 +170,7 @@ async function startReaderLoop() {
 
                     // Update only tcTemp
                     tcObj.update(temp, tcObj.refTemp);
+                    updateTcVisual(tcId);
                     
                     });
                 }
@@ -129,6 +185,7 @@ async function startReaderLoop() {
     try {
         localReader.releaseLock();
     } catch (_) {}
+    reader = null;
 }
 
 async function openPort(p) {
@@ -139,23 +196,7 @@ async function openPort(p) {
         // Close old port if exists
         if (port && port !== p) {
             console.log("Closing previous port...");
-            if (reader) {
-                try {
-                    await reader.cancel();
-                } catch (_) {}
-            }
-            try {
-                await port.close();
-            } catch (_) {}
-            port = null;
-            reader = null;
-        }
-
-        if (writer) {
-            try {
-                writer.releaseLock();
-            } catch (_) {}
-            writer = null;
+            await closeCurrentPort();
         }
 
         // Check if port is already open; if so, close it first
@@ -230,6 +271,11 @@ function loadSaveStates() {
     // 3️⃣ Update dropdown
     populateActiveTcsArray();
 
+    // 4️⃣ Sync 3D meshes if scene is ready
+    if (scene) {
+        syncTcMeshes();
+    }
+
     console.log("Loaded saved states:", { calibrationFinished, activeTcsArray });
 }
 
@@ -252,6 +298,47 @@ choosePortBtn.addEventListener('click', async () => {
     }
 });
 
+
+setPositionBtn.addEventListener('click', async () => {
+    if(!writer) {
+        console.warn("Writer not ready; connect to the serial port first.");
+        output.textContent = "Connect to the serial port before setting position.";
+        return;
+    }
+
+    console.log("Set Position clicked");
+    const x = parseFloat(posXInput.value) || 0;
+    const y = parseFloat(posYInput.value) || 0;
+    const z = parseFloat(posZInput.value) || 0;
+
+    const selectedIdText = selectedTc.textContent.split(': ')[1];
+    const tcId = parseInt(selectedIdText, 10);
+
+    if(!tcId) {
+        console.warn("No TC selected; cannot set position.");
+        positionOutput.textContent = "Select a TC before setting position.";
+        return;
+    }
+
+    const tc = activeTcsArray.find(tc => tc.id === tcId);
+
+    if(tc) {
+        tc.x = x;
+        tc.y = y;
+        tc.z = z;
+        localStorage.setItem('thermocouples', JSON.stringify(activeTcsArray));
+        positionOutput.textContent = `Saved position for TC ${tcId} with X:${x}, Y:${y}, Z:${z}`;
+        console.log(`Updated TC ${tcId}:`, tc);
+        syncTcMeshes();
+    } else {
+        console.log("Thermocouple not found!");
+        positionOutput.textContent = "Thermocouple not found.";
+    }
+
+});
+
+
+
 statusBtn.addEventListener('click', async () => {
     if(writer) {
         await writer.write(new TextEncoder().encode("status\n"));
@@ -261,6 +348,11 @@ statusBtn.addEventListener('click', async () => {
 });
 
 sendSelectionBtn.addEventListener('click', async () => {
+    if(!writer) {
+        console.warn("Writer not ready; connect to the serial port first.");
+        output.textContent = "Connect to the serial port before sending a TC.";
+        return;
+    }
     const selector = document.getElementById('active-tcs-dropdown');
     const selectedId = selector.value; 
     console.log("Selected TC ID:", selectedId);
@@ -273,22 +365,33 @@ let calibrationFinished = false;
 finishedCalibrationBtn.addEventListener('click', async () => {
     console.log("Finished Calibration clicked, sending 'measure' to MCU");
 
+    if(!writer) {
+        console.warn("Writer not ready; connect to the serial port first.");
+        output.textContent = "Connect to the serial port before changing calibration mode.";
+        return;
+    }
+
     calibrationFinished = !calibrationFinished;
     localStorage.setItem('calibrationFinished', JSON.stringify(calibrationFinished));
 
     if(calibrationFinished) {
-        await writer.write(new TextEncoder().encode("measure\n"));
-        finishedCalibrationBtn.textContent = "Enter Calibration Mode";
-    } else {
+        console.log("Calibration finished, sending 'measure' command");
         await writer.write(new TextEncoder().encode("calibrate\n"));
         finishedCalibrationBtn.textContent = "Finish Calibration";
+    } else {
+        await writer.write(new TextEncoder().encode("measure\n"));
+        finishedCalibrationBtn.textContent = "Enter Calibration Mode";
     }
     
+    syncTcMeshes();
 
 });
 
 // On load, attempt auto-connect
 window.addEventListener('load', async () => {
+    loadSaveStates();
+    initThreeScene();
+    syncTcMeshes();
     await sleep(200);
     console.log("Page loaded. Trying auto-connect...");
     await tryAutoConnect();
@@ -298,12 +401,104 @@ window.addEventListener('load', async () => {
 // On unload, send refresh command
 window.addEventListener('beforeunload', async () => {
     console.log("Page unloading")
-    if(writer) {
-        try {
-            await write.write(new TextEncoder().encode("refresh\n"));
-            console.log("Sent refresh command before unload."); 
-        } catch (err) {
-            console.error("Error sending refresh cmd:", err);
+    await closeCurrentPort(true);
+});
+
+// ============ THREE.JS SCENE SETUP ============
+
+function initThreeScene() {
+    const container = document.getElementById('three-container');
+    if (!container) {
+        console.error('three-container not found!');
+        return;
+    }
+
+    console.log('Initializing Three.js scene...');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0d0d0f);
+
+    const { clientWidth, clientHeight } = container;
+    console.log('Container dimensions:', clientWidth, clientHeight);
+    camera = new THREE.PerspectiveCamera(45, clientWidth / clientHeight, 0.1, 100);
+    camera.position.set(5, 5, 5);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(clientWidth, clientHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    container.appendChild(renderer.domElement);
+
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0.5, 0);
+    controls.update();
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(5, 10, 7);
+    scene.add(dir);
+
+    scene.add(new THREE.GridHelper(10, 10));
+    scene.add(new THREE.AxesHelper(1.5));
+
+    window.addEventListener('resize', onWindowResize);
+    console.log('Scene initialized successfully, starting animation loop');
+    animate();
+}
+
+function onWindowResize() {
+    const container = document.getElementById('three-container');
+    if (!container || !camera || !renderer) return;
+
+    const { clientWidth, clientHeight } = container;
+    camera.aspect = clientWidth / clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(clientWidth, clientHeight);
+}
+
+function syncTcMeshes() {
+    if (!scene) {
+        console.warn('Scene not initialized, skipping mesh sync');
+        return;
+    }
+
+    console.log('Syncing TC meshes. Active TCs:', activeTcsArray.length);
+    const width = 0.5;
+    const depth = 0.5;
+
+    for (let tc of activeTcsArray) {
+        const key = tc.id;
+        let cube = tcObjects[key];
+
+        if (!cube) {
+            console.log('Creating cube for TC', key);
+            const geometry = new THREE.BoxGeometry(width, 0.5, depth);
+            const material = new THREE.MeshStandardMaterial({ color: coldColor });
+            cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
+            tcObjects[key] = cube;
+        }
+
+        cube.position.set(tc.x || 0, tc.y || 0, tc.z || 0);
+        updateTcVisual(key);
     }
 }
-});
+
+function updateTcVisual(tcId) {
+    const cube = tcObjects[tcId];
+    const tc = activeTcsArray.find(t => t.id === tcId);
+    if (!cube || !tc) return;
+
+    const temp = tc.tcTemp;
+    if (typeof temp === 'number') {
+        const t = Math.min(1, Math.max(0, (temp - 20) / (30 - 20)));
+        const color = new THREE.Color().lerpColors(coldColor, hotColor, t);
+        cube.material.color.copy(color);
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    if (controls) controls.update();
+    if (renderer && scene && camera) renderer.render(scene, camera);
+}
