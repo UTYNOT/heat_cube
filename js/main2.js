@@ -13,6 +13,10 @@ const selector = document.getElementById('active-tcs-dropdown');
 
 const positionOutput = document.getElementById('position-tc');
 
+
+const savePositionBtn = document.getElementById('save-position-btn');
+const uploadPositionBtn = document.getElementById('upload-position-btn');
+
 const setPositionBtn = document.getElementById('set-position-btn');
 const posXInput = document.getElementById('pos-x');
 const posYInput = document.getElementById('pos-y');
@@ -29,17 +33,10 @@ let camera = null;
 let renderer = null;
 let controls = null;
 const tcObjects = {};
-const coldColor = new THREE.Color(0x0000ff);
-const hotColor = new THREE.Color(0xff0000);
+const coldColor = new THREE.Color(0x00ff00);
+const hotColor = new THREE.Color(0xffff00);
 
 async function closeCurrentPort(sendRefresh = false) {
-    try {
-        if (writer && sendRefresh) {
-            await writer.write(new TextEncoder().encode("refresh\n"));
-        }
-    } catch (err) {
-        console.warn("Failed to send refresh before closing:", err);
-    }
 
     if (reader) {
         try {
@@ -142,7 +139,6 @@ async function startReaderLoop() {
                             activeTcsArray.push(new Thermocouple(id));
                         }
                     }
-
                     console.log("Active TCs Array:", activeTcsArray);
                     localStorage.setItem('thermocouples', JSON.stringify(activeTcsArray));
                     populateActiveTcsArray();
@@ -150,12 +146,42 @@ async function startReaderLoop() {
                     output.textContent = line; 
                 }
 
+                if(line.startsWith("CalibrationState") || line.startsWith("MeasureState")) {
+                    console.log("Received state from MCU:", line);
+                    // CalibrationState = in calibration mode
+                    // MeasureState = in measuring mode (calibration finished)
+                    if(line.startsWith("MeasureState")) {
+                        calibrationFinished = true;
+                        finishedCalibrationBtn.textContent = "Enter Calibration Mode";
+                    } else {
+                        calibrationFinished = false;
+                        finishedCalibrationBtn.textContent = "Finish Calibration";
+                    }
+                    localStorage.setItem('calibrationFinished', JSON.stringify(calibrationFinished));
+                    console.log("Updated calibration state:", calibrationFinished);
+                }
+
                 if(line.startsWith("TC_Probe")) {
                     tcData.textContent = line
                     console.log(line);
+                    
+                    // Extract temperature from TC_Probe line and update selected TC
+                    // Format might be: TC_Probe: 25.5 or similar
+                    const tempMatch = line.match(/[\d.]+/);
+                    if(tempMatch && selector.value) {
+                        const temp = parseFloat(tempMatch[0]);
+                        const selectedId = parseInt(selector.value);
+                        const tc = activeTcsArray.find(t => t.id === selectedId);
+                        if(tc) {
+                            tc.tcTemp = temp;
+                            updateTcVisual(selectedId);
+                            syncTcMeshes();
+                        }
+                    }
                 }
 
                 if(line.startsWith("TC: ")) {
+                    tcData.textContent = line
                     const temps = line.substring(3).split(',').map(s => parseFloat(s.trim()));
                     
                     temps.forEach((temp, index) => {
@@ -173,6 +199,47 @@ async function startReaderLoop() {
                     updateTcVisual(tcId);
                     
                     });
+                    syncTcMeshes();
+                }
+
+                if(line.startsWith("LOAD_POSITIONS:")) {
+                    console.log("Received LOAD_POSITIONS data from MCU");
+                    // Parse: LOAD_POSITIONS:1,0.0,0.0,0.0;2,1.0,0.0,0.0;...
+                    const data = line.substring(15); // Get everything after "LOAD_POSITIONS:"
+                    
+                    if(data.startsWith("ERROR")) {
+                        console.warn("MCU returned error:", data);
+                        positionOutput.textContent = `Error loading positions: ${data}`;
+                        return;
+                    }
+
+                    const positions = data.split(';');
+                    let successCount = 0;
+
+                    for(let pos of positions) {
+                        const parts = pos.trim().split(',');
+                        if(parts.length === 4) {
+                            const tcId = parseInt(parts[0]);
+                            const x = parseFloat(parts[1]);
+                            const y = parseFloat(parts[2]);
+                            const z = parseFloat(parts[3]);
+
+                            const tc = activeTcsArray.find(tc => tc.id === tcId);
+                            if(tc) {
+                                tc.x = x;
+                                tc.y = y;
+                                tc.z = z;
+                                successCount++;
+                                console.log(`Updated TC ${tcId}: x=${x}, y=${y}, z=${z}`);
+                            }
+                        }
+                    }
+
+                    localStorage.setItem('thermocouples', JSON.stringify(activeTcsArray));
+                    syncTcMeshes();
+                    positionOutput.textContent = `Loaded ${successCount} positions from MCU`;
+                    console.log("Position data updated from MCU");
+                    console.log("activeTcsArray:", activeTcsArray);
                 }
 
             }
@@ -299,6 +366,35 @@ choosePortBtn.addEventListener('click', async () => {
 });
 
 
+
+savePositionBtn.addEventListener('click', async () => {
+    if(!writer) {
+        console.warn("Writer not ready; connect to the serial port first.");
+        output.textContent = "Connect to the serial port before saving position.";
+        return;
+    }   
+    
+    if (activeTcsArray.length === 0) {
+        console.warn('No thermocouples to save');
+        positionOutput.textContent = 'No thermocouples to save';
+        return;
+    }
+    
+    console.log("Save Position clicked, sending positions over UART");
+    
+    // Build all positions into one line: SAVE_POSITIONS:id,x,y,z;id,x,y,z;...
+    const positionData = activeTcsArray.map(tc => 
+        `${tc.id},${tc.x || 0},${tc.y || 0},${tc.z || 0}`
+    ).join(';');
+    
+    const message = `SAVE_POSITIONS:${positionData}\n`;
+    await writer.write(new TextEncoder().encode(message));
+    console.log("Sent all positions:", message.trim());
+    
+    positionOutput.textContent = `Sent ${activeTcsArray.length} positions to MCU`;
+    console.log("All positions sent over UART");
+});
+
 setPositionBtn.addEventListener('click', async () => {
     if(!writer) {
         console.warn("Writer not ready; connect to the serial port first.");
@@ -337,6 +433,23 @@ setPositionBtn.addEventListener('click', async () => {
 
 });
 
+uploadPositionBtn.addEventListener('click', async () => {
+    if(!writer) {
+        console.warn("Writer not ready; connect to the serial port first.");
+        output.textContent = "Connect to the serial port before uploading positions.";
+        return;
+    }   
+    
+    console.log("Upload Position clicked, sending LOAD_POSITIONS command to MCU");
+    
+    // Send the LOAD_POSITIONS command to request position data from MCU
+    const message = `LOAD_POSITIONS\n`;
+    await writer.write(new TextEncoder().encode(message));
+    console.log("Sent LOAD_POSITIONS command to MCU");
+    
+    positionOutput.textContent = `Sent load positions request to MCU`;
+});
+
 
 
 statusBtn.addEventListener('click', async () => {
@@ -354,9 +467,14 @@ sendSelectionBtn.addEventListener('click', async () => {
         return;
     }
     const selector = document.getElementById('active-tcs-dropdown');
-    const selectedId = selector.value; 
+    const selectedId = parseInt(selector.value); 
     console.log("Selected TC ID:", selectedId);
     selectedTc.textContent = `Selected TC: ${selectedId}`;
+    
+    // Update visual immediately when TC is selected
+    updateTcVisual(selectedId);
+    syncTcMeshes();
+    
     await writer.write(new TextEncoder().encode(`${selectedId}\n`));
 });
 
@@ -393,16 +511,12 @@ window.addEventListener('load', async () => {
     initThreeScene();
     syncTcMeshes();
     await sleep(200);
+    await closeCurrentPort();
     console.log("Page loaded. Trying auto-connect...");
     await tryAutoConnect();
  
 });
 
-// On unload, send refresh command
-window.addEventListener('beforeunload', async () => {
-    console.log("Page unloading")
-    await closeCurrentPort(true);
-});
 
 // ============ THREE.JS SCENE SETUP ============
 
@@ -502,3 +616,5 @@ function animate() {
     if (controls) controls.update();
     if (renderer && scene && camera) renderer.render(scene, camera);
 }
+
+

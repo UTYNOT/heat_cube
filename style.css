@@ -324,6 +324,40 @@ input[type="number"]:focus {
     margin-bottom: 0;
 }
 
+/* Position Input Layout */
+.position-inputs {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+}
+
+.position-group {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 100px;
+}
+
+.position-group span {
+    margin-right: 4px;
+    font-weight: 600;
+}
+
+.position-group input[type="number"] {
+    flex: 1;
+    min-width: 80px;
+}
+
+/* Position Buttons Layout */
+.position-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
 .form-group {
     margin-bottom: 12px;
     display: flex;

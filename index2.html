@@ -60,14 +60,28 @@
                     <div id="tc-data"></div>
                 </div>
 
-                <div class = "control-section">
+                <div class="control-section">
                     <h2>Set Position (mm)</h2>
                     <div id="calibration-data"></div>
-                    <div>
-                        X: <input type="number" id="pos-x">
-                        Y: <input type="number" id="pos-y">
-                        Z: <input type="number" id="pos-z">
-                    <button id="set-position-btn">Set Position</button>
+                    <div class="position-inputs">
+                        <div class="position-group">
+                            <span>X:</span>
+                            <input type="number" id="pos-x">
+                        </div>
+                        <div class="position-group">
+                            <span>Y:</span>
+                            <input type="number" id="pos-y">
+                        </div>
+                        <div class="position-group">
+                            <span>Z:</span>
+                            <input type="number" id="pos-z">
+                        </div>
+                    </div>
+                    <div class="position-buttons">
+                        <button id="set-position-btn">Set Position</button>
+                        <button id="save-position-btn">Save Position To CSV</button>
+                        <button id="upload-position-btn">Upload Positions from CSV</button>
+                    </div>
                     <div id="position-tc"></div>
                 </div>
 
@@ -84,8 +98,6 @@
             </div>
         </div>
 
-        <!-- Error Messages -->
-        <div id="error-msg"></div>
 
         <!-- Hidden elements for compatibility -->
         <pre id="selected-tc-output" style="display: none;"></pre>
