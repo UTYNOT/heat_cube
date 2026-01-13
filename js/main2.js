@@ -8,8 +8,15 @@ const selectedTc = document.getElementById('selected-tc');
 const tcData = document.getElementById('tc-data');
 const finishedCalibrationBtn = document.getElementById('finished-calibration-btn');
 const statusBtn = document.getElementById('status-btn');
+const fileDropdown = document.getElementById('file-dropdown');
+const selectFileBtn = document.getElementById('select-file-btn');
+const timeSlider = document.getElementById('time-slider');
+const timeLabel = document.getElementById('time-label');
 
 const selector = document.getElementById('active-tcs-dropdown');
+
+// Storage for file data
+let fileDataArray = []; // Array of {time: "15:36:03", temps: [2047.75, 22.75, ...]}
 
 const positionOutput = document.getElementById('position-tc');
 
@@ -35,6 +42,9 @@ let controls = null;
 const tcObjects = {};
 const coldColor = new THREE.Color(0x00ff00);
 const hotColor = new THREE.Color(0xffff00);
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let hoveredCube = null;
 
 async function closeCurrentPort(sendRefresh = false) {
 
@@ -159,6 +169,53 @@ async function startReaderLoop() {
                     }
                     localStorage.setItem('calibrationFinished', JSON.stringify(calibrationFinished));
                     console.log("Updated calibration state:", calibrationFinished);
+                }
+
+                if(line.startsWith("FILES:")) {
+                    console.log("Received FILES data from MCU:", line);
+                    const filesData = line.substring(6); // Get everything after "FILES:"
+                    
+                    if(filesData && filesData !== "ERROR") {
+                        // Split by comma to get individual files
+                        const files = filesData.split(',').map(f => f.trim()).filter(f => f.length > 0);
+                        
+                        console.log("Files received:", files);
+                        
+                        // Populate dropdown
+                        fileDropdown.innerHTML = '<option value="" disabled selected>Select a file...</option>';
+                        files.forEach(file => {
+                            const option = document.createElement('option');
+                            option.value = file;
+                            option.textContent = file;
+                            fileDropdown.appendChild(option);
+                        });
+                        
+                        output.textContent = `Found ${files.length} file(s)`;
+                    } else {
+                        fileDropdown.innerHTML = '<option value="" disabled selected>No files available</option>';
+                        output.textContent = "No files found on device";
+                    }
+                }
+
+                if(line.startsWith("FILE_DATA:")) {
+                    const data = line.substring(10); // Get everything after "FILE_DATA:"
+                    const parts = data.split(',');
+                    
+                    if(parts.length > 1) {
+                        const time = parts[0];
+                        const temps = parts.slice(1).map(t => parseFloat(t));
+                        
+                        fileDataArray.push({ time, temps });
+                        console.log(`Stored data point: ${time}, temps:`, temps);
+                        
+                        // Update slider range
+                        timeSlider.max = fileDataArray.length - 1;
+                        timeSlider.value = fileDataArray.length - 1;
+                        timeSlider.disabled = false;
+                        timeLabel.textContent = `Time: ${time}`;
+                        
+                        output.textContent = `Loaded ${fileDataArray.length} data points`;
+                    }
                 }
 
                 if(line.startsWith("TC_Probe")) {
@@ -460,22 +517,62 @@ statusBtn.addEventListener('click', async () => {
     }
 });
 
-sendSelectionBtn.addEventListener('click', async () => {
+selectFileBtn.addEventListener('click', async () => {
     if(!writer) {
         console.warn("Writer not ready; connect to the serial port first.");
-        output.textContent = "Connect to the serial port before sending a TC.";
+        output.textContent = "Connect to the serial port before selecting a file.";
         return;
     }
+    
+    const selectedFile = fileDropdown.value;
+    if(!selectedFile) {
+        console.warn("No file selected in dropdown");
+        output.textContent = "Please select a file from the dropdown.";
+        return;
+    }
+    
+    // Clear previous file data
+    fileDataArray = [];
+    timeSlider.value = 0;
+    timeSlider.max = 0;
+    timeSlider.disabled = true;
+    timeLabel.textContent = "Time: --:--:--";
+    
+    const message = `FILE_SELECTED:${selectedFile}\n`;
+    await writer.write(new TextEncoder().encode(message));
+    console.log("Sent FILE_SELECTED:", selectedFile);
+    output.textContent = `Loading file: ${selectedFile}`;
+});
+
+timeSlider.addEventListener('input', () => {
+    const index = parseInt(timeSlider.value);
+    if(index >= 0 && index < fileDataArray.length) {
+        const dataPoint = fileDataArray[index];
+        timeLabel.textContent = `Time: ${dataPoint.time}`;
+        
+        // Update thermocouple temperatures
+        dataPoint.temps.forEach((temp, i) => {
+            const tcId = i + 1;
+            const tc = activeTcsArray.find(t => t.id === tcId);
+            if(tc) {
+                tc.tcTemp = temp;
+                updateTcVisual(tcId);
+            }
+        });
+        
+        syncTcMeshes();
+        console.log(`Updated to time ${dataPoint.time}`);
+    }
+});
+
+sendSelectionBtn.addEventListener('click', async () => {
     const selector = document.getElementById('active-tcs-dropdown');
-    const selectedId = parseInt(selector.value); 
-    console.log("Selected TC ID:", selectedId);
-    selectedTc.textContent = `Selected TC: ${selectedId}`;
-    
-    // Update visual immediately when TC is selected
-    updateTcVisual(selectedId);
-    syncTcMeshes();
-    
-    await writer.write(new TextEncoder().encode(`${selectedId}\n`));
+    const selectedId = parseInt(selector.value);
+    if (isNaN(selectedId)) {
+        console.warn("No TC selected in dropdown");
+        return;
+    }
+    selectThermocouple(selectedId);
 });
 
 let calibrationFinished = false;
@@ -555,6 +652,11 @@ function initThreeScene() {
     scene.add(new THREE.GridHelper(10, 10));
     scene.add(new THREE.AxesHelper(1.5));
 
+    // Add click event listener for cube selection
+    renderer.domElement.addEventListener('click', onCanvasClick);
+    renderer.domElement.addEventListener('mousemove', onCanvasMouseMove);
+    renderer.domElement.style.cursor = 'default';
+
     window.addEventListener('resize', onWindowResize);
     console.log('Scene initialized successfully, starting animation loop');
     animate();
@@ -568,6 +670,107 @@ function onWindowResize() {
     camera.aspect = clientWidth / clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(clientWidth, clientHeight);
+}
+
+function onCanvasMouseMove(event) {
+    if (!camera || !scene || !renderer) return;
+
+    const container = document.getElementById('three-container');
+    const rect = container.getBoundingClientRect();
+    
+    // Calculate mouse position in normalized device coordinates
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Update raycaster
+    raycaster.setFromCamera(mouse, camera);
+
+    // Get all TC cubes
+    const cubes = Object.values(tcObjects);
+    
+    // Check for intersections
+    const intersects = raycaster.intersectObjects(cubes);
+
+    // Reset previous hovered cube
+    if (hoveredCube) {
+        hoveredCube.scale.set(1, 1, 1);
+        // Reset emissive to remove brightness
+        hoveredCube.material.emissive.setHex(0x000000);
+        hoveredCube.material.emissiveIntensity = 0;
+        hoveredCube = null;
+        renderer.domElement.style.cursor = 'default';
+    }
+
+    // Apply hover effect to new cube
+    if (intersects.length > 0) {
+        hoveredCube = intersects[0].object;
+        hoveredCube.scale.set(1.15, 1.15, 1.15);
+        // Add brightness by setting emissive color
+        hoveredCube.material.emissive.copy(hoveredCube.material.color);
+        hoveredCube.material.emissiveIntensity = 0.3;
+        renderer.domElement.style.cursor = 'pointer';
+    }
+}
+
+function onCanvasClick(event) {
+    if (!camera || !scene) return;
+
+    const container = document.getElementById('three-container');
+    const rect = container.getBoundingClientRect();
+    
+    // Calculate mouse position in normalized device coordinates (-1 to +1)
+    mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Update raycaster with camera and mouse position
+    raycaster.setFromCamera(mouse, camera);
+
+    // Get all TC cubes as an array
+    const cubes = Object.values(tcObjects);
+    
+    // Check for intersections
+    const intersects = raycaster.intersectObjects(cubes);
+
+    if (intersects.length > 0) {
+        // Find which TC this cube belongs to
+        const clickedCube = intersects[0].object;
+        
+        // Find TC ID by matching the cube object
+        let clickedTcId = null;
+        for (const [id, cube] of Object.entries(tcObjects)) {
+            if (cube === clickedCube) {
+                clickedTcId = parseInt(id);
+                break;
+            }
+        }
+
+        if (clickedTcId !== null) {
+            console.log('Clicked on TC cube:', clickedTcId);
+            selectThermocouple(clickedTcId);
+        }
+    }
+}
+
+async function selectThermocouple(tcId) {
+    if (!writer) {
+        console.warn("Writer not ready; connect to the serial port first.");
+        output.textContent = "Connect to the serial port before sending a TC.";
+        return;
+    }
+
+    console.log("Selecting TC ID:", tcId);
+    
+    // Update UI
+    selectedTc.textContent = `Selected TC: ${tcId}`;
+    const selector = document.getElementById('active-tcs-dropdown');
+    selector.value = tcId;
+    
+    // Update visual immediately when TC is selected
+    updateTcVisual(tcId);
+    syncTcMeshes();
+    
+    // Send to MCU via UART
+    await writer.write(new TextEncoder().encode(`${tcId}\n`));
 }
 
 function syncTcMeshes() {

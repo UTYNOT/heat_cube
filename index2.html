@@ -94,6 +94,16 @@
 
             <!-- Viewer Panel (3D) -->
             <div class="viewer-panel">
+                <div class="viewer-header">
+                    <select id="file-dropdown">
+                        <option value="" disabled selected>No files available</option>
+                    </select>
+                    <button id="select-file-btn">Select File</button>
+                </div>
+                <div class="time-slider-container">
+                    <label for="time-slider" id="time-label">Time: --:--:--</label>
+                    <input type="range" id="time-slider" min="0" max="0" value="0" disabled>
+                </div>
                 <div id="three-container" style="width: 100%; height: 100%;"></div>
             </div>
         </div>
