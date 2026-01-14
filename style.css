@@ -585,6 +585,190 @@ input[type="number"]:focus {
     }
 }
 
+/* TC Sidebar Styles */
+.tc-sidebar {
+    width: 220px;
+    background: #1a1a1a;
+    border-left: 1px solid #444;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3);
+}
+
+.tc-sidebar-header {
+    padding: 16px;
+    border-bottom: 1px solid #333;
+    background: #111;
+}
+
+.tc-sidebar-header h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #0d9488;
+    font-weight: 600;
+}
+.tc-sidebar-section {
+    padding: 16px;
+    border-bottom: 1px solid #333;
+}
+
+.tc-sidebar-section label {
+    font-size: 14px;
+    color: #fff;
+    font-weight: 600;
+    display: block;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.tc-sidebar-section input[type="range"] {
+    width: 100%;
+    cursor: pointer;
+    margin-bottom: 8px;
+}
+
+.tc-sidebar-section input[type="number"] {
+    width: 100%;
+    padding: 5px;
+    background: #222;
+    border: 1px solid #444;
+    color: #fff;
+    font-size: 12px;
+    border-radius: 4px;
+}
+
+.tc-sidebar-section input[type="number"]:focus {
+    outline: none;
+    border-color: #0d9488;
+    box-shadow: 0 0 8px rgba(13, 148, 136, 0.2);
+}
+
+.tc-select-row {
+    display: flex;
+    gap: 8px;
+}
+
+.tc-sidebar-section select {
+    width: 100%;
+    padding: 6px;
+    background: #222;
+    border: 1px solid #444;
+    color: #fff;
+    font-size: 13px;
+    border-radius: 4px;
+}
+
+.tc-sidebar-section select:focus {
+    outline: none;
+    border-color: #0d9488;
+    box-shadow: 0 0 8px rgba(13, 148, 136, 0.2);
+}
+
+.tc-select-button {
+    padding: 6px 16px;
+    background: #0d9488;
+    border: none;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.tc-select-button:hover {
+    background: #0f9f8e;
+    box-shadow: 0 0 12px rgba(13, 148, 136, 0.4);
+}
+
+.tc-select-button:active {
+    transform: scale(0.98);
+}
+
+.tc-sidebar-section .time-display {
+    font-size: 16px;
+    padding: 12px 14px;
+    background: #0a0a0a;
+    border: 1px solid #0d9488;
+    border-radius: 4px;
+    color: #ffffff !important;
+    font-weight: 600;
+    text-align: center;
+    font-family: 'Courier New', monospace;
+    letter-spacing: 1px;
+}
+.tc-sidebar-controls {
+    padding: 16px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.tc-sidebar-controls label {
+    font-size: 12px;
+    color: #aaa;
+    font-weight: 500;
+}
+
+.tc-sidebar-controls input {
+    padding: 6px;
+    background: #222;
+    border: 1px solid #444;
+    color: #fff;
+    font-size: 13px;
+    border-radius: 4px;
+}
+
+.tc-sidebar-controls input:focus {
+    outline: none;
+    border-color: #0d9488;
+    box-shadow: 0 0 8px rgba(13, 148, 136, 0.2);
+}
+
+.tc-sidebar-info {
+    flex: 1;
+    padding: 16px;
+    overflow-y: auto;
+}
+
+.tc-info-card {
+    background: #222;
+    border: 1px solid #333;
+    border-left: 3px solid #0d9488;
+    border-radius: 4px;
+    padding: 10px;
+    margin-bottom: 10px;
+    font-size: 14px;
+}
+
+.tc-info-card strong {
+    color: #0d9488;
+    font-size: 16px;
+    display: block;
+    margin-bottom: 8px;
+}
+
+.tc-info-field {
+    display: flex;
+    justify-content: space-between;
+    margin: 6px 0;
+    color: #ccc;
+}
+
+.tc-info-field .label {
+    color: #aaa;
+    font-weight: 500;
+}
+
+.tc-info-field .value {
+    color: #fff;
+    font-family: 'Courier New', monospace;
+}
+
 @media (max-width: 768px) {
     body {
         padding: 10px;
@@ -611,4 +795,111 @@ input[type="number"]:focus {
     #timeline-slider {
         min-width: auto;
     }
+
+    .tc-sidebar {
+        display: none;
+    }
 }
+
+/* Responsive design for larger screens */
+@media (min-width: 1024px) {
+    /* Tablets and small desktops */
+    .tc-sidebar {
+        width: 280px;
+    }
+    
+    .tc-sidebar-header h3 {
+        font-size: 18px;
+    }
+    
+    .tc-sidebar-section label {
+        font-size: 15px;
+    }
+    
+    .tc-sidebar-section .time-display {
+        font-size: 18px;
+        padding: 14px 16px;
+    }
+    
+    .tc-info-card {
+        font-size: 15px;
+    }
+    
+    .tc-info-card strong {
+        font-size: 17px;
+    }
+}
+
+@media (min-width: 1440px) {
+    /* Larger desktops */
+    .tc-sidebar {
+        width: 320px;
+    }
+    
+    .tc-sidebar-header h3 {
+        font-size: 20px;
+    }
+    
+    .tc-sidebar-section {
+        padding: 20px;
+    }
+    
+    .tc-sidebar-section label {
+        font-size: 16px;
+        margin-bottom: 10px;
+    }
+    
+    .tc-sidebar-section .time-display {
+        font-size: 20px;
+        padding: 16px 18px;
+    }
+    
+    .tc-sidebar-section input[type="number"] {
+        font-size: 14px;
+        padding: 8px;
+    }
+    
+    .tc-info-card {
+        font-size: 16px;
+        padding: 14px;
+    }
+    
+    .tc-info-card strong {
+        font-size: 19px;
+    }
+    
+    .tc-sidebar-info {
+        padding: 20px;
+    }
+}
+
+@media (min-width: 1920px) {
+    /* Ultra-wide monitors */
+    .tc-sidebar {
+        width: 360px;
+    }
+    
+    .tc-sidebar-header h3 {
+        font-size: 22px;
+    }
+    
+    .tc-sidebar-section {
+        padding: 24px;
+    }
+    
+    .tc-sidebar-section label {
+        font-size: 18px;
+    }
+    
+    .tc-sidebar-section .time-display {
+        font-size: 22px;
+        padding: 18px 20px;
+    }
+    
+    .tc-info-card {
+        font-size: 17px;
+        padding: 16px;
+    }
+    
+    .tc-info-card strong {
+        font-size: 21px;
