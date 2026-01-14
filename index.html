@@ -93,12 +93,17 @@
             </div>
 
             <!-- Viewer Panel (3D) -->
-            <div class="viewer-panel">
+            <div class="viewer-panel" id="viewer-panel">
                 <div class="viewer-header">
                     <select id="file-dropdown">
                         <option value="" disabled selected>No files available</option>
                     </select>
                     <button id="select-file-btn">Select File</button>
+                    <button id="fullscreen-btn" title="Toggle Fullscreen" class="fullscreen-btn">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path>
+                        </svg>
+                    </button>
                 </div>
                 <div class="time-slider-container">
                     <label for="time-slider" id="time-label">Time: --:--:--</label>

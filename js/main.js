@@ -17,6 +17,10 @@ const selector = document.getElementById('active-tcs-dropdown');
 
 // Storage for file data
 let fileDataArray = []; // Array of {time: "15:36:03", temps: [2047.75, 22.75, ...]}
+let isLoadingFile = false; // Flag to track if we're actively loading a file
+let fileLoadTimeout = null; // Timeout to detect when file loading completes
+let loggedSyncMeshesOnce = false; // Log sync message only once
+let filesReceived = false; // Flag to track if FILES list has been received
 
 const positionOutput = document.getElementById('position-tc');
 
@@ -29,6 +33,8 @@ const posXInput = document.getElementById('pos-x');
 const posYInput = document.getElementById('pos-y');
 const posZInput = document.getElementById('pos-z');
 
+const fullscreenBtn = document.getElementById('fullscreen-btn');
+const viewerPanel = document.getElementById('viewer-panel');
 
 let port = null;
 let writer = null;
@@ -60,7 +66,7 @@ async function closeCurrentPort(sendRefresh = false) {
 
     if (writer) {
         try {
-            writer.releaseLock();
+            await writer.releaseLock();
         } catch (_) {}
         writer = null;
     }
@@ -71,6 +77,9 @@ async function closeCurrentPort(sendRefresh = false) {
         } catch (_) {}
         port = null;
     }
+    
+    // Give OS time to fully release the port
+    await sleep(500);
 }
 
 class Thermocouple {
@@ -130,7 +139,10 @@ async function startReaderLoop() {
 
             for (let line of lines) {
                 line = line.trim();
-                console.log("MCU:", line);
+                // Skip logging FILE_DATA and TC streaming lines to avoid console spam
+                if(!line.startsWith("FILE_DATA:") && !line.startsWith("TC:")) {
+                    console.log("MCU:", line);
+                }
                 // output.textContent = line; // simple output display
                 
                 if(line.startsWith("Active TCs:")) {
@@ -172,7 +184,7 @@ async function startReaderLoop() {
                 }
 
                 if(line.startsWith("FILES:")) {
-                    console.log("Received FILES data from MCU:", line);
+                    console.log("Received FILEs from MCU:", line);
                     const filesData = line.substring(6); // Get everything after "FILES:"
                     
                     if(filesData && filesData !== "ERROR") {
@@ -190,6 +202,11 @@ async function startReaderLoop() {
                             fileDropdown.appendChild(option);
                         });
                         
+                        // Mark that FILES have been successfully received
+                        filesReceived = true;
+                        selectFileBtn.disabled = false;
+                        console.log("✓ filesReceived flag set to true, Select File button enabled");
+                        
                         output.textContent = `Found ${files.length} file(s)`;
                     } else {
                         fileDropdown.innerHTML = '<option value="" disabled selected>No files available</option>';
@@ -197,7 +214,22 @@ async function startReaderLoop() {
                     }
                 }
 
+                if(line.startsWith("SOFTWARE_INIT")) {
+                    console.log("MCU software initialized");
+                    // MCU is already connected and sending this message
+                    // No need to close/reconnect - just initialize UI
+                    loadSaveStates();
+                    initThreeScene();
+                    syncTcMeshes();
+                }
+
                 if(line.startsWith("FILE_DATA:")) {
+                    // Only process FILE_DATA if we're actively loading a file
+                    if(!isLoadingFile) {
+                        
+                        continue;
+                    }
+                    
                     const data = line.substring(10); // Get everything after "FILE_DATA:"
                     const parts = data.split(',');
                     
@@ -206,7 +238,22 @@ async function startReaderLoop() {
                         const temps = parts.slice(1).map(t => parseFloat(t));
                         
                         fileDataArray.push({ time, temps });
-                        console.log(`Stored data point: ${time}, temps:`, temps);
+                        
+                        // Log progress every 50 data points
+                        if(fileDataArray.length % 50 === 0) {
+                            console.log(`Loading file... ${fileDataArray.length} data points loaded`);
+                        }
+                        
+                        // Clear previous timeout and set new one to detect end of file transmission
+                        // Use longer timeout (2000ms) to account for delays between data packets
+                        if(fileLoadTimeout) clearTimeout(fileLoadTimeout);
+                        fileLoadTimeout = setTimeout(() => {
+                            console.log(`✓ File loading complete: ${fileDataArray.length} total data points`);
+                            isLoadingFile = false;
+                            fileLoadTimeout = null;
+                            // Persist file data to localStorage
+                            localStorage.setItem('fileDataArray', JSON.stringify(fileDataArray));
+                        }, 2000); // 2s after last data point (increased from 500ms)
                         
                         // Update slider range
                         timeSlider.max = fileDataArray.length - 1;
@@ -329,12 +376,31 @@ async function openPort(p) {
             try {
                 await p.close();
             } catch (_) {}
-            await sleep(100);
+            await sleep(300);
         }
 
-        console.log("Attempting to open port with baudRate 115200...");
-        await p.open({ baudRate: 115200 });
-        console.log("Port opened successfully");
+        // Retry logic for opening port
+        let retries = 3;
+        let lastErr = null;
+        while (retries > 0) {
+            try {
+                console.log(`Attempting to open port with baudRate 115200... (attempt ${4 - retries}/3)`);
+                await p.open({ baudRate: 115200 });
+                console.log("Port opened successfully");
+                break;
+            } catch (err) {
+                lastErr = err;
+                retries--;
+                if (retries > 0) {
+                    console.warn(`Port open failed, retrying in 1s...`);
+                    await sleep(1000);
+                }
+            }
+        }
+
+        if (retries === 0) {
+            throw lastErr;
+        }
 
         writer = p.writable.getWriter();
         output.textContent = "Port opened! Sending status command...";
@@ -348,7 +414,7 @@ async function openPort(p) {
 
     } catch (err) {
         console.error("Error opening port:", err.message);
-        output.textContent = "Error opening port: " + err.message;
+        output.textContent = "Error opening port: " + err.message + ". Try again or check if MCU is connected.";
     }
 }
 
@@ -374,13 +440,13 @@ async function tryAutoConnect() {
 }
 
 function loadSaveStates() {
-    // 1️⃣ Load calibrationFinished state
+    // 1️ Load calibrationFinished state
     calibrationFinished = JSON.parse(localStorage.getItem('calibrationFinished') || 'false');
     finishedCalibrationBtn.textContent = calibrationFinished
         ? "Enter Calibration Mode"
         : "Finish Calibration";
 
-    // 2️⃣ Load thermocouples
+    // 2️ Load thermocouples
     const storedTcs = JSON.parse(localStorage.getItem('thermocouples') || '[]');
     activeTcsArray = storedTcs.map(tcData => {
         const tc = new Thermocouple(tcData.id);
@@ -392,10 +458,10 @@ function loadSaveStates() {
         return tc;
     });
 
-    // 3️⃣ Update dropdown
+    // 3️ Update dropdown
     populateActiveTcsArray();
 
-    // 4️⃣ Sync 3D meshes if scene is ready
+    // 4️ Sync 3D meshes if scene is ready
     if (scene) {
         syncTcMeshes();
     }
@@ -403,6 +469,8 @@ function loadSaveStates() {
     console.log("Loaded saved states:", { calibrationFinished, activeTcsArray });
 }
 
+// Disable Select File button initially until FILES are received
+selectFileBtn.disabled = true;
 
 // User selects a new port
 choosePortBtn.addEventListener('click', async () => {
@@ -533,24 +601,59 @@ selectFileBtn.addEventListener('click', async () => {
         return;
     }
     
+    // Wait for FILES list to be received from MCU before allowing file selection
+    console.log("Select File clicked. filesReceived flag:", filesReceived);
+    if(!filesReceived) {
+        console.warn("FILES list not yet received from MCU; please wait.");
+        output.textContent = "Waiting for file list from MCU...";
+        return;
+    }
+    
+    // Get the currently selected file from dropdown
     const selectedFile = fileDropdown.value;
+    console.log("Dropdown value at click time:", selectedFile);
+    
     if(!selectedFile) {
         console.warn("No file selected in dropdown");
         output.textContent = "Please select a file from the dropdown.";
         return;
     }
     
-    // Clear previous file data
+    // Wait a bit to ensure no other UART commands are queued
+    await sleep(100);
+    
+    // Clear any pending file load timeout from previous file load
+    if(fileLoadTimeout) {
+        clearTimeout(fileLoadTimeout);
+        fileLoadTimeout = null;
+    }
+    
+    // Clear previous file data and set loading flag
     fileDataArray = [];
+    isLoadingFile = true;
     timeSlider.value = 0;
     timeSlider.max = 0;
     timeSlider.disabled = true;
     timeLabel.textContent = "Time: --:--:--";
     
-    const message = `FILE_SELECTED:${selectedFile}\n`;
+    const message = `FILE_SELECTED:${selectedFile}\r\n`;
     await writer.write(new TextEncoder().encode(message));
-    console.log("Sent FILE_SELECTED:", selectedFile);
+    console.log("Sent FILE_SELECTED command:", message.trim());
     output.textContent = `Loading file: ${selectedFile}`;
+});
+
+fullscreenBtn.addEventListener('click', async () => {
+    if (!viewerPanel) return;
+    
+    if (!document.fullscreenElement) {
+        // Enter fullscreen
+        viewerPanel.requestFullscreen().catch(err => {
+            console.error('Fullscreen request failed:', err);
+        });
+    } else {
+        // Exit fullscreen
+        document.exitFullscreen();
+    }
 });
 
 timeSlider.addEventListener('input', () => {
@@ -587,7 +690,7 @@ sendSelectionBtn.addEventListener('click', async () => {
 let calibrationFinished = false;
 
 finishedCalibrationBtn.addEventListener('click', async () => {
-    console.log("Finished Calibration clicked, sending 'measure' to MCU");
+    console.log("Toggling calibration mode");
 
     if(!writer) {
         console.warn("Writer not ready; connect to the serial port first.");
@@ -595,29 +698,56 @@ finishedCalibrationBtn.addEventListener('click', async () => {
         return;
     }
 
+    // Flip local state and persist
     calibrationFinished = !calibrationFinished;
     localStorage.setItem('calibrationFinished', JSON.stringify(calibrationFinished));
 
-    if(calibrationFinished) {
-        console.log("Calibration finished, sending 'measure' command");
-        await writer.write(new TextEncoder().encode("calibrate\n"));
-        finishedCalibrationBtn.textContent = "Finish Calibration";
-    } else {
+    if (calibrationFinished) {
+        // Finished calibration -> enter measurement mode on MCU
+        console.log("Calibration finished; sending 'measure' to MCU");
         await writer.write(new TextEncoder().encode("measure\n"));
         finishedCalibrationBtn.textContent = "Enter Calibration Mode";
+    } else {
+        // Enter calibration mode on MCU
+        console.log("Entering calibration; sending 'calibrate' to MCU");
+        await writer.write(new TextEncoder().encode("calibrate\n"));
+        finishedCalibrationBtn.textContent = "Finish Calibration";
     }
-    
-    syncTcMeshes();
 
+    syncTcMeshes();
 });
 
 // On load, attempt auto-connect
 window.addEventListener('load', async () => {
+    // Load persisted file data
+    const storedFileData = localStorage.getItem('fileDataArray');
+    if (storedFileData) {
+        try {
+            fileDataArray = JSON.parse(storedFileData);
+            console.log(`Restored ${fileDataArray.length} data points from localStorage`);
+            
+            // Restore slider state
+            if (fileDataArray.length > 0) {
+                timeSlider.max = fileDataArray.length - 1;
+                timeSlider.value = fileDataArray.length - 1;
+                timeSlider.disabled = false;
+                timeLabel.textContent = `Time: ${fileDataArray[fileDataArray.length - 1].time}`;
+                output.textContent = `Loaded ${fileDataArray.length} data points (restored)`;
+            }
+        } catch (err) {
+            console.warn('Failed to restore file data:', err);
+            fileDataArray = [];
+        }
+    } else {
+        fileDataArray = [];
+    }
+    
+    isLoadingFile = false;
+    
     loadSaveStates();
     initThreeScene();
     syncTcMeshes();
-    await sleep(200);
-    await closeCurrentPort();
+    
     console.log("Page loaded. Trying auto-connect...");
     await tryAutoConnect();
  
@@ -789,7 +919,10 @@ function syncTcMeshes() {
         return;
     }
 
-    console.log('Syncing TC meshes. Active TCs:', activeTcsArray.length);
+    if (!loggedSyncMeshesOnce) {
+        console.log('Syncing TC meshes. Active TCs:', activeTcsArray.length);
+        loggedSyncMeshesOnce = true;
+    }
     const width = 0.5;
     const depth = 0.5;
 
@@ -818,9 +951,15 @@ function updateTcVisual(tcId) {
 
     const temp = tc.tcTemp;
     if (typeof temp === 'number') {
-        const t = Math.min(1, Math.max(0, (temp - 20) / (30 - 20)));
+        const t = Math.min(1, Math.max(0, (temp - 20) / (35 - 20)));
+
+        // Color interpolation
         const color = new THREE.Color().lerpColors(coldColor, hotColor, t);
         cube.material.color.copy(color);
+
+        // Opacity interpolation (0.3 → 1.0): cold is transparent, hot is opaque
+        cube.material.opacity = 0.5 + 2 * t;
+        cube.material.transparent = true;
     }
 }
 

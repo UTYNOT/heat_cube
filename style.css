@@ -236,7 +236,7 @@ h3 {
     border-radius: 8px;
     overflow: hidden;
     backdrop-filter: blur(10px);
-    height: 600px;
+    height: 1000px;
     position: relative;
     display: flex;
     flex-direction: column;
@@ -278,6 +278,25 @@ h3 {
     flex-shrink: 0;
 }
 
+.fullscreen-btn {
+    padding: 8px 10px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin: 0 !important;
+}
+
+.fullscreen-btn:hover {
+    transform: scale(1.05);
+}
+
+.fullscreen-btn svg {
+    width: 20px;
+    height: 20px;
+    color: #ffffff;
+}
 .time-slider-container {
     padding: 10px 15px;
     background: #ffffff;
@@ -491,7 +510,7 @@ input[type="number"]:focus {
 /* 3D Container */
 #three-container {
     width: 100%;
-    height: 600px;
+    height: 1000px;
     border: 1px solid #0f5495;
     border-radius: 8px;
     margin-top: 20px;
