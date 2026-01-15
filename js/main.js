@@ -160,13 +160,14 @@ async function startReaderLoop() {
         try {
             const { value, done } = await localReader.read();
             if (done) break;
-
+            
             buffer += value;
             let lines = buffer.split('\n');
             buffer = lines.pop();
 
             for (let line of lines) {
                 line = line.trim();
+                console.log("Received line:", line);
                 // Skip logging FILE_DATA and TC streaming lines to avoid console spam
                 if(!line.startsWith("FILE_DATA:") && !line.startsWith("TC:")) {
                     console.log("MCU:", line);
@@ -312,26 +313,24 @@ async function startReaderLoop() {
                     }
                 }
 
-                if(line.startsWith("TC: ")) {
-                    tcData.textContent = line
-                    const temps = line.substring(3).split(',').map(s => parseFloat(s.trim()));
-                    
-                    temps.forEach((temp, index) => {
-                    // TC id is index + 1
-                    const tcId = index + 1;
+                if(line.startsWith("TC") && line.includes(":")) {
+                    // Parse format: TC4: 24.25
+                    const match = line.match(/TC(\d+):\s*([\d.]+)/);
+                    if (match) {
+                        const tcId = parseInt(match[1]);
+                        const temp = parseFloat(match[2]);
+                        
+                        const tcObj = activeTcsArray.find(tc => tc.id === tcId);
+                        if (!tcObj) {
+                            console.warn("TC object not found for ID:", tcId);
+                            return;
+                        }
 
-                    const tcObj = activeTcsArray.find(tc => tc.id === tcId);
-                    if (!tcObj) {
-                        console.warn("TC object not found for ID:", tcId);
-                        return;
+                        // Update only tcTemp
+                        tcObj.update(temp, tcObj.refTemp);
+                        updateTcVisual(tcId);
+                        syncTcMeshes();
                     }
-
-                    // Update only tcTemp
-                    tcObj.update(temp, tcObj.refTemp);
-                    updateTcVisual(tcId);
-                    
-                    });
-                    syncTcMeshes();
                 }
 
                 if(line.startsWith("LOAD_POSITIONS:")) {
