@@ -1,181 +1,24 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.module.js';
 import { OrbitControls } from './OrbitControls.js';
+import { logger } from './logger.js';
+import { VIZ_CONFIG, CalibrationConfig, UART_CONFIG } from './config.js';
+import { formatTime, sleep, throttle } from './utils.js';
+import { Thermocouple } from './thermocouple.js';
+import { UARTHelper } from './uart-helper.js';
 
-// ============ CONFIGURATION ============
-const VIZ_CONFIG = {
-    tempMin: 20,
-    tempMax: 35,
-    coldColor: 0xAF0000,
-    hotColor: 0xffff00,
-    opacityMin: 0.3,
-    opacityMax: 1.0,
-    cubeSize: 0.5
-};
-
-const CalibrationConfig = {
-    THRESHOLD_MIN: 2.0,
-    THRESHOLD_MAX: 15.0,
-    VALID_TEMP_MAX: 2000,
-    NUM_TCS: 8,
-    REFERENCE_UPDATE_INTERVAL: 20000,
-    TEMP_DROP_THRESHOLD: 0.75
-};
 
 // ============ LOGGING SYSTEM ============
-class Logger {
-    constructor() {
-        // Log levels: DEBUG < INFO < WARN < ERROR
-        this.levels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
-        // Default to WARN level (only show warnings and errors)
-        // Change to 'DEBUG' for verbose logging, 'INFO' for normal, 'WARN' for quiet, 'ERROR' for minimal
-        this.currentLevel = this.getLogLevel();
-    }
-
-    getLogLevel() {
-        // Check localStorage first, then default to WARN (quiet mode)
-        // If someone previously set it to DEBUG, they can change it back with window.setLogLevel('WARN')
-        const stored = localStorage.getItem('logLevel');
-        // Default to WARN to suppress spam - only show warnings and errors
-        return stored || 'WARN';
-    }
-
-    setLogLevel(level) {
-        if (this.levels.hasOwnProperty(level)) {
-            this.currentLevel = level;
-            localStorage.setItem('logLevel', level);
-        }
-    }
-
-    shouldLog(level) {
-        return this.levels[level] >= this.levels[this.currentLevel];
-    }
-
-    debug(...args) {
-        if (this.shouldLog('DEBUG')) {
-            console.log('[DEBUG]', ...args);
-        }
-    }
-
-    info(...args) {
-        if (this.shouldLog('INFO')) {
-            console.log('[INFO]', ...args);
-        }
-    }
-
-    warn(...args) {
-        if (this.shouldLog('WARN')) {
-            console.warn('[WARN]', ...args);
-        }
-    }
-
-    error(...args) {
-        if (this.shouldLog('ERROR')) {
-            console.error('[ERROR]', ...args);
-        }
-    }
-
-    // Special method for MCU messages (very frequent, should be DEBUG level)
-    mcu(...args) {
-        this.debug('MCU:', ...args);
-    }
-}
-
-// Global logger instance
-const logger = new Logger();
-
-// Expose logger to window for easy debugging: window.setLogLevel('DEBUG') in console
+// Logger is now imported from logger.js
+// Expose logger to window for quick console commands
 window.setLogLevel = (level) => logger.setLogLevel(level);
 window.getLogger = () => logger;
+window.logDebug = (...args) => logger.debug(...args);
+window.logInfo = (...args) => logger.info(...args);
+window.logWarn = (...args) => logger.warn(...args);
+window.logError = (...args) => logger.error(...args);
 
-// ============ UTILITY FUNCTIONS ============
-function formatTime(timeString) {
-    if (!timeString || timeString === '--:--:--') return timeString;
-    const parts = timeString.split(':');
-    if (parts.length !== 3) return timeString;
-    return parts.map(part => part.padStart(2, '0')).join(':');
-}
+// ============ SERIAL COMMUNICATION ============
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// ============ HELPER CLASS (Similar to MCU Helper) ============
-class UARTHelper {
-    constructor(port) {
-        this.port = port;
-        this.writer = null;
-        this.reader = null;
-        this.buffer = '';
-    }
-
-    async write(message) {
-        if (!this.writer) {
-            throw new Error("Writer not ready");
-        }
-        await this.writer.write(new TextEncoder().encode(message + "\n"));
-    }
-
-    async readLine() {
-        if (!this.reader) return null;
-        
-        try {
-            const { value, done } = await this.reader.read();
-            if (done) return null;
-            
-            this.buffer += new TextDecoder().decode(value);
-            const lines = this.buffer.split('\n');
-            this.buffer = lines.pop() || '';
-            
-            return lines.length > 0 ? lines[0].trim() : null;
-        } catch (err) {
-            logger.error("Read error:", err);
-            return null;
-        }
-    }
-
-    async close() {
-        if (this.reader) {
-            try {
-                await this.reader.cancel();
-                this.reader.releaseLock();
-            } catch (_) {}
-            this.reader = null;
-        }
-
-        if (this.writer) {
-            try {
-                await this.writer.releaseLock();
-            } catch (_) {}
-            this.writer = null;
-        }
-
-        if (this.port) {
-            try {
-                await this.port.close();
-            } catch (_) {}
-            this.port = null;
-        }
-        
-        await sleep(500);
-    }
-}
-
-// ============ THERMOCOUPLE CLASS ============
-class Thermocouple {
-    constructor(id) {
-        this.id = id;
-        this.tcTemp = null;
-        this.refTemp = null;
-        this.x = 0;
-        this.y = 0;
-        this.z = 0;
-    }
-
-    update(tcTemp, refTemp) {
-        this.tcTemp = tcTemp;
-        this.refTemp = refTemp;
-    }
-}
 
 // ============ 3D VISUALIZATION CLASS ============
 class Visualization3D {
@@ -192,6 +35,9 @@ class Visualization3D {
         this.hoveredCube = null;
         this.lastMeshSyncTime = 0;
         this.MESH_SYNC_THROTTLE_MS = 100;
+        this.lastActiveTcsArray = [];
+        this.lastSelectedTcId = null;
+        this.lastCalibrationMode = true;
     }
 
     init() {
@@ -295,9 +141,8 @@ class Visualization3D {
     syncTcMeshes(activeTcsArray, selectedTcId, isCalibrationMode = true) {
         if (!this.scene) return;
 
-        const now = Date.now();
-        if (now - this.lastMeshSyncTime < this.MESH_SYNC_THROTTLE_MS) return;
-        this.lastMeshSyncTime = now;
+        // Cache for animate loop to use
+        this.updateActiveTcsCached(activeTcsArray, selectedTcId, isCalibrationMode);
 
         for (const tc of activeTcsArray) {
             let cube = this.tcObjects[tc.id];
@@ -325,6 +170,7 @@ class Visualization3D {
         if (!cube || !tc || !cube.material) return;
 
         const isSelected = selectedTcId === tc.id;
+        const isHovered = cube === this.hoveredCube;
         const temp = tc.tcTemp;
         
         if (typeof temp !== 'number') return;
@@ -345,6 +191,10 @@ class Visualization3D {
             // Only scale up, pop, and brighten in calibration mode
             cube.material.opacity = 1.0;
             cube.scale.set(1.3, 1.3, 1.3);
+        } else if (isHovered) {
+            // Preserve hover effect
+            cube.scale.set(1.15, 1.15, 1.15);
+            cube.material.opacity = this.config.opacityMin + t * opacityRange;
         } else {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
@@ -382,9 +232,28 @@ class Visualization3D {
     animate() {
         requestAnimationFrame(() => this.animate());
         if (this.controls) this.controls.update();
+        
+        // Throttle visual updates to prevent lag from high-frequency temp data
+        const now = Date.now();
+        if (now - this.lastMeshSyncTime >= this.MESH_SYNC_THROTTLE_MS) {
+            this.lastMeshSyncTime = now;
+            // Update all TC visuals in a batch once per throttle interval
+            for (const tc of this.lastActiveTcsArray) {
+                if (this.tcObjects[tc.id]) {
+                    this.updateTcVisual(tc, this.lastSelectedTcId, this.lastCalibrationMode);
+                }
+            }
+        }
+        
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
         }
+    }
+    
+    updateActiveTcsCached(activeTcsArray, selectedTcId, isCalibrationMode) {
+        this.lastActiveTcsArray = activeTcsArray;
+        this.lastSelectedTcId = selectedTcId;
+        this.lastCalibrationMode = isCalibrationMode;
     }
 }
 
@@ -408,6 +277,8 @@ class HeatCubeSystem {
         // User interaction tracking
         this.userSelectedTc = false; // Track if user manually selected a TC
         this.lastSentTcId = null; // Track the last TC ID sent over UART to prevent duplicates
+        this.waitingForProbeId = null; // TC ID we're waiting for a probe response for
+        this.probeRequestInterval = null; // Interval for repeatedly sending TC ID until probe received
 
         // UI Elements
         this.initUIElements();
@@ -466,9 +337,32 @@ class HeatCubeSystem {
         this.elements.recordVideoBtn.addEventListener('click', () => this.handleRecordVideo());
         this.elements.tcSelectBtn.addEventListener('click', () => this.handleTcSelectSidebar());
         
-        // Track when user manually changes the dropdown
-        this.elements.selector.addEventListener('change', () => {
-            this.userSelectedTc = true;
+        // Track if we're programmatically changing the dropdown (to prevent change event from interfering)
+        this.isProgrammaticDropdownChange = false;
+        
+        // Dropdown change event - only update UI, don't send over UART (button click sends it)
+        this.elements.selector.addEventListener('change', (e) => {
+            // Skip if this is a programmatic change from cube click
+            if (this.isProgrammaticDropdownChange) {
+                this.isProgrammaticDropdownChange = false;
+                return;
+            }
+            
+            const tcId = parseInt(e.target.value);
+            if (!isNaN(tcId)) {
+                this.userSelectedTc = true;
+                // Update UI elements only - don't send over UART
+                this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
+                
+                const tc = this.activeTcsArray.find(t => t.id === tcId);
+                if (tc) {
+                    this.elements.posXInput.value = tc.x || 0;
+                    this.elements.posYInput.value = tc.y || 0;
+                    this.elements.posZInput.value = tc.z || 0;
+                }
+                
+                this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
+            }
         });
         
         // Canvas click handler will be set up after viz3D is initialised
@@ -482,9 +376,18 @@ class HeatCubeSystem {
         
         // Set up canvas click handler after initialisation
         if (this.viz3D.renderer) {
-            this.viz3D.renderer.domElement.addEventListener('click', (e) => {
+            this.viz3D.renderer.domElement.addEventListener('click', async (e) => {
                 const tcId = this.viz3D.onCanvasClick(e);
-                if (tcId) this.selectThermocouple(tcId);
+                if (tcId) {
+                    // Mark as programmatic change to prevent dropdown change event from interfering
+                    this.isProgrammaticDropdownChange = true;
+                    // Set dropdown to reflect clicked cube
+                    this.elements.selector.value = tcId;
+                    this.userSelectedTc = true;
+                    // Update display, visuals, and send to MCU (selectThermocouple handles UART send)
+                    // Use the actual clicked tcId, not the dropdown value
+                    await this.selectThermocouple(tcId, true);
+                }
             });
         }
         
@@ -495,13 +398,14 @@ class HeatCubeSystem {
     }
 
     // ============ SERIAL PORT MANAGEMENT ============
+    // Allows you to select the port from the dropdown menu (UART connection with MCU)
     async handleChoosePort() {
         try {
-            const port = await navigator.serial.requestPort();
-            const info = port.getInfo();
-            localStorage.setItem('lastPort', JSON.stringify(info));
-            await this.openPort(port);
-        } catch (err) {
+            const port = await navigator.serial.requestPort(); // Opens the port selection dialog
+            const info = port.getInfo(); // Stores the port information
+            localStorage.setItem('lastPort', JSON.stringify(info)); // Stores the port information in local storage
+            await this.openPort(port); // Opens the port and starts the reader loop..
+        } catch (err) { // If an error occurs, log the error and display a message to the user
             logger.error("Error selecting port:", err);
             this.elements.output.textContent = "Error selecting port: " + err;
         }
@@ -509,7 +413,7 @@ class HeatCubeSystem {
 
     async openPort(port) {
         try {
-            await sleep(200);
+            await sleep(200); // Waits for 200ms to ensure the port is closed
 
             if (this.helper && this.helper.port && this.helper.port !== port) {
                 await this.helper.close();
@@ -525,30 +429,31 @@ class HeatCubeSystem {
             let retries = 3;
             while (retries > 0) {
                 try {
-                    await port.open({ baudRate: 115200 });
+                    await port.open({ baudRate: 115200 }); // Opens the port with the baud rate of 115200
                     break;
                 } catch (err) {
-                    retries--;
+                    retries--; // Decrements the retries counter
                     if (retries > 0) {
-                        await sleep(1000);
+                        await sleep(1000); // Waits for 1000ms to try again
                     } else {
-                        throw err;
+                        throw err; // Throws the error if the retries are exhausted
                     }
                 }
             }
 
             this.helper = new UARTHelper(port);
             this.helper.writer = port.writable.getWriter();
-            this.elements.output.textContent = "Port opened! Sending status command...";
+            this.elements.output.textContent = "Port opened! Sending status command..."; // Displays a message to the user that the port has been opened
 
             await sleep(200);
-            await this.helper.write("status");
+            
+            await this.helper.write("status"); // Sends the status command to the MCU to check if the connection is successful
 
-            this.startReaderLoop();
+            this.startReaderLoop(); // Starts the reader loop to read the data from the MCU
         } catch (err) {
-            logger.error("Error opening port:", err.message);
+            logger.error("Error opening port:", err.message); // Logs the error if the port fails to open
             this.elements.output.textContent = "Error opening port: " + err.message;
-            this.helper = null;
+            this.helper = null; // Sets the helper to null if the port fails to open
         }
     }
 
@@ -574,7 +479,7 @@ class HeatCubeSystem {
                 const batch = processingQueue.splice(0, batchSize);
                 for (const line of batch) {
                     if (line && line.trim()) {
-                        this.processLine(line.trim());
+                        this.processLine(line.trim()); // Processes the line of data from the MCU by calling the processLine function
                     }
                 }
                 // Yield to event loop after each batch
@@ -652,10 +557,11 @@ class HeatCubeSystem {
     processLine(line) {
         if (!line) return;
 
-        // High-frequency messages that should NEVER be logged (even in DEBUG mode)
+        // High-frequency messages that should NOT be logged (even in DEBUG mode)
         const highFrequencyPatterns = [
             "FILE_DATA:",
             "TC_CALIBRATE",
+            "TC_Probe",
             /^TC\d+:/,  // TC1:, TC2:, etc.
         ];
 
@@ -676,6 +582,7 @@ class HeatCubeSystem {
 
         // Process different message types
         if (line.startsWith("Active TCs:")) {
+            console.log('=== Active TCs: ===', line);
             this.handleActiveTCs(line);
         } else if (line.startsWith("CalibrationState") || line.startsWith("MeasureState")) {
             this.handleStateChange(line);
@@ -697,6 +604,10 @@ class HeatCubeSystem {
             this.handleLoadPositions(line);
         } else if (line === "POSITION_ACK") {
             this.handlePositionAck();
+        } else if (line === "REQUEST_ALL_POSITIONS") {
+            this.handleRequestAllPositions();
+        } else if (line.startsWith("REQUEST_POSITIONS:")) {
+            this.handleRequestSpecificPositions(line);
         }
     }
 
@@ -711,8 +622,9 @@ class HeatCubeSystem {
                 this.activeTcsArray.push(new Thermocouple(id));
             }
         }
-
+        
         localStorage.setItem('thermocouples', JSON.stringify(this.activeTcsArray));
+        console.log('=== activeTcsArray after handleActiveTCs ===', this.activeTcsArray);
         this.populateActiveTcsDropdown();
         this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
         this.elements.output.textContent = line;
@@ -727,6 +639,7 @@ class HeatCubeSystem {
     }
 
     handleFilesList(line) {
+        
         const filesData = line.substring(6);
         if (filesData && filesData !== "ERROR") {
             const files = filesData.split(',').map(f => f.trim()).filter(f => f.length > 0);
@@ -797,15 +710,18 @@ class HeatCubeSystem {
             const probeTemp = parseFloat(probeMatch[2]);
             const refTemp = parseFloat(probeMatch[3]);
 
+            // Stop sending if we received the probe we were waiting for
+            if (this.waitingForProbeId === tcId) {
+                this.stopProbeRequest();
+                logger.debug(`Received TC_Probe${tcId} - stopping repeated send`);
+            }
+
             const tc = this.activeTcsArray.find(t => t.id === tcId);
             if (tc) {
                 tc.update(probeTemp, refTemp);
                 this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
                 
-                // Only update dropdown if user hasn't manually selected a different TC
-                if (!this.userSelectedTc || parseInt(this.elements.selector.value) === tcId) {
-                    this.elements.selector.value = tcId;
-                }
+                // Don't touch the dropdown - let user control it independently
                 
                 // Always update position inputs for the probe TC
                 this.elements.posXInput.value = tc.x || 0;
@@ -844,7 +760,7 @@ class HeatCubeSystem {
             const tcObj = this.activeTcsArray.find(tc => tc.id === tcId);
             if (tcObj) {
                 tcObj.update(temp, tcObj.refTemp);
-                this.viz3D.updateTcVisual(tcObj, this.getSelectedTcId(), !this.calibrationFinished);
+                // Don't call updateTcVisual here - let the render loop handle it
             }
             
             const receivedTCs = Object.keys(this.currentCalibrateBatch)
@@ -865,8 +781,29 @@ class HeatCubeSystem {
             
             const tcObj = this.activeTcsArray.find(tc => tc.id === tcId);
             if (tcObj) {
+                // Check for high temperature change
+                const previousTemp = this.previousTcTemps[tcId];
+                if (previousTemp !== undefined) {
+                    const tempChange = Math.abs(temp - previousTemp);
+                    
+                    // If temperature change is above threshold (e.g., 4°C), send TC ID over UART
+                    if (tempChange >= CalibrationConfig.THRESHOLD_MIN) {
+                        if (this.helper && this.helper.writer) {
+                            try {
+                                this.helper.write(String(tcId));
+                                logger.debug(`High temp change detected on TC ${tcId}: ${tempChange.toFixed(2)}°C - sent to MCU`);
+                            } catch (err) {
+                                logger.warn(`Failed to send high temp change notification for TC ${tcId}: ${err}`);
+                            }
+                        }
+                    }
+                }
+                
+                // Store previous temp and update
+                this.previousTcTemps[tcId] = temp;
                 tcObj.update(temp, tcObj.refTemp);
-                this.viz3D.updateTcVisual(tcObj, this.getSelectedTcId(), !this.calibrationFinished);
+                // Don't call updateTcVisual here - let the render loop handle it
+                // This prevents lag from high-frequency temperature updates
             }
         }
     }
@@ -914,6 +851,65 @@ class HeatCubeSystem {
             if (currentText && !currentText.includes('✓')) {
                 this.elements.positionOutput.textContent = currentText + ' (✓ MCU acknowledged)';
             }
+        }
+    }
+
+    async handleRequestAllPositions() {
+        // MCU is requesting all positions (count mismatch or missing data)
+        logger.warn('MCU requested all positions - resending...');
+        this.elements.positionOutput.textContent = 'MCU requested all positions - resending...';
+        // Automatically resend all positions
+        await this.handleSavePosition();
+    }
+
+    async handleRequestSpecificPositions(line) {
+        // MCU is requesting specific missing positions
+        // Format: REQUEST_POSITIONS:16 or REQUEST_POSITIONS:16,17,18
+        const missingIdsStr = line.substring(18); // Get everything after "REQUEST_POSITIONS:"
+        const missingIds = missingIdsStr.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
+        
+        if (missingIds.length === 0) {
+            logger.warn('MCU requested positions but no valid IDs found');
+            return;
+        }
+        
+        logger.warn(`MCU requested specific positions: ${missingIds.join(', ')} - resending...`);
+        this.elements.positionOutput.textContent = `MCU requested positions ${missingIds.join(', ')} - resending...`;
+        
+        // Resend only the requested positions
+        if (!this.helper || !this.helper.writer) {
+            this.elements.positionOutput.textContent = "Cannot resend: not connected";
+            return;
+        }
+        
+        try {
+            // Send start command with count and list of missing TC IDs
+            const missingIdsStr = missingIds.map(id => String(id)).join(',');
+            await this.helper.write(`SAVE_POSITIONS_START:${missingIds.length}:${missingIdsStr}`);
+            await sleep(100);
+            
+            for (const tcId of missingIds) {
+                const tc = this.activeTcsArray.find(t => t.id === tcId);
+                if (tc) {
+                    const positionLine = `SAVE_POSITION:${String(tc.id)},${String(tc.x || 0)},${String(tc.y || 0)},${String(tc.z || 0)}`;
+                    console.log(`Resending position for TC ${tcId}:`, positionLine);
+                    await this.helper.write(positionLine);
+                    logger.debug(`Resent: ${positionLine}`);
+                    await sleep(50); // Reduced delay for faster resending
+                } else {
+                    logger.warn(`TC ${tcId} not found in activeTcsArray`);
+                }
+            }
+            
+            // Send done command
+            await this.helper.write('SAVE_POSITIONS_DONE');
+            await sleep(100);
+            
+            this.elements.positionOutput.textContent = `Resent ${missingIds.length} missing positions to MCU`;
+            logger.info(`Resent ${missingIds.length} missing positions to MCU`);
+        } catch (err) {
+            logger.error('Error resending positions:', err);
+            this.elements.positionOutput.textContent = `Error resending positions: ${err.message}`;
         }
     }
 
@@ -975,7 +971,10 @@ class HeatCubeSystem {
         if (maxChange.tcId > 0) {
             if (maxChange.delta >= CalibrationConfig.THRESHOLD_MIN && 
                 maxChange.delta <= CalibrationConfig.THRESHOLD_MAX) {
-                this.selectThermocouple(maxChange.tcId);
+                // selectThermocouple is async and will send TC ID over UART if changed
+                this.selectThermocouple(maxChange.tcId).catch(err => {
+                    logger.warn(`Failed to select thermocouple ${maxChange.tcId}:`, err);
+                });
             }
         }
         
@@ -1024,21 +1023,56 @@ class HeatCubeSystem {
             this.elements.output.textContent = "Please select a thermocouple from the dropdown first.";
             return;
         }
-        await this.selectThermocouple(selectedId);
+        
+        // Use selectThermocouple which handles all UI updates and UART sending
+        this.userSelectedTc = true;
+        await this.selectThermocouple(selectedId, true);
+        this.elements.output.textContent = `Sent TC ${selectedId}`;
     }
 
-    async selectThermocouple(tcId) {
+    stopProbeRequest() {
+        // Stop repeatedly sending TC ID when probe is received
+        if (this.probeRequestInterval) {
+            clearInterval(this.probeRequestInterval);
+            this.probeRequestInterval = null;
+        }
+        this.waitingForProbeId = null;
+    }
+
+    startProbeRequest(tcId) {
+        // Stop any existing probe request
+        this.stopProbeRequest();
+        
         if (!this.helper || !this.helper.writer) {
-            this.elements.output.textContent = "Connect to the serial port before sending a TC.";
             return;
         }
-
-        // Only send over UART if the TC ID has actually changed
-        const shouldSend = this.lastSentTcId !== tcId;
         
-        this.userSelectedTc = true; // Mark that user manually selected
+        // Set the TC ID we're waiting for
+        this.waitingForProbeId = tcId;
+        
+        // Send immediately
+        this.helper.write(String(tcId)).catch(err => {
+            logger.warn(`Failed to send TC ${tcId} over UART:`, err);
+        });
+        this.lastSentTcId = tcId;
+        
+        // Set up interval to send repeatedly every 500ms until probe received
+        this.probeRequestInterval = setInterval(() => {
+            if (this.helper && this.helper.writer && this.waitingForProbeId === tcId) {
+                this.helper.write(String(tcId)).catch(err => {
+                    logger.warn(`Failed to send TC ${tcId} over UART:`, err);
+                });
+                logger.debug(`Repeatedly sending TC selection: ${tcId}`);
+            } else {
+                // Stop if connection lost or TC changed
+                this.stopProbeRequest();
+            }
+        }, 500); // Send every 500ms
+    }
+
+    async selectThermocouple(tcId, forceSend = false) {
+        // Updates the "Selected TC:" display and sends TC ID over UART if changed
         this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
-        this.elements.selector.value = tcId;
         
         const tc = this.activeTcsArray.find(t => t.id === tcId);
         if (tc) {
@@ -1049,11 +1083,21 @@ class HeatCubeSystem {
         
         this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
         
-        // Only send if the TC ID changed
-        if (shouldSend) {
-            await this.helper.write(`${tcId}`);
-            this.lastSentTcId = tcId;
-            logger.debug(`Sent TC selection: ${tcId}`);
+        // If forceSend is true, start repeatedly sending until probe received
+        if (forceSend && this.helper && this.helper.writer) {
+            this.startProbeRequest(tcId);
+        } else {
+            // Send TC ID over UART if it changed and we have a connection (one-time send)
+            const shouldSend = this.lastSentTcId !== tcId;
+            if (this.helper && this.helper.writer && shouldSend) {
+                try {
+                    await this.helper.write(String(tcId));
+                    this.lastSentTcId = tcId;
+                    logger.debug(`Sent TC selection over UART: ${tcId}`);
+                } catch (err) {
+                    logger.warn(`Failed to send TC ${tcId} over UART:`, err);
+                }
+            }
         }
     }
 
@@ -1113,27 +1157,52 @@ class HeatCubeSystem {
         this.elements.timeSlider.disabled = true;
         this.elements.timeLabel.textContent = "Time: --:--:--";
         
-        await this.helper.write(`FILE_SELECTED:${selectedFile}\r`);
+        await this.helper.write(`FILE_SELECTED:${selectedFile}`);
         this.elements.output.textContent = `Loading file: ${selectedFile}`;
     }
 
     async handleSavePosition() {
         if (!this.helper || !this.helper.writer) {
-            this.elements.output.textContent = "Connect to the serial port before saving position.";
+            this.elements.positionOutput.textContent = "Connect to the serial port before saving position.";
+            logger.warn('Cannot save positions: helper or writer not available');
             return;
         }
         
         if (this.activeTcsArray.length === 0) {
             this.elements.positionOutput.textContent = 'No thermocouples to save';
+            logger.warn('Cannot save positions: activeTcsArray is empty');
             return;
         }
         
-        const positionData = this.activeTcsArray.map(tc => 
-            `${tc.id},${tc.x || 0},${tc.y || 0},${tc.z || 0}`
-        ).join(';');
-
-        await this.helper.write(`SAVE_POSITIONS:${positionData}\r`);
-        this.elements.positionOutput.textContent = `Sent ${this.activeTcsArray.length} positions to MCU`;
+        logger.info(`Saving ${this.activeTcsArray.length} positions to MCU...`);
+        
+        // Send each position line by line with longer delay between sends
+        try {
+            // Send start command with count and list of expected TC IDs
+            const tcIds = this.activeTcsArray.map(tc => String(tc.id)).join(',');
+            await this.helper.write(`SAVE_POSITIONS_START:${this.activeTcsArray.length}:${tcIds}`);
+            await sleep(100);
+            
+            for (let i = 0; i < this.activeTcsArray.length; i++) {
+                const tc = this.activeTcsArray[i];
+                const positionLine = `SAVE_POSITION:${String(tc.id)},${String(tc.x || 0)},${String(tc.y || 0)},${String(tc.z || 0)}`;
+                console.log(`Sending position line ${i + 1}/${this.activeTcsArray.length}:`, positionLine);
+                await this.helper.write(positionLine);
+                logger.debug(`Sent: ${positionLine}`);
+                // Reduced delay since MCU now properly handles position saving without interference
+                await sleep(50); // 50ms delay - fast enough but gives MCU time to process
+            }
+            
+            // Send done command to signal all positions have been sent
+            await this.helper.write('SAVE_POSITIONS_DONE');
+            await sleep(100);
+            
+            this.elements.positionOutput.textContent = `Sent ${this.activeTcsArray.length} positions to MCU (line by line)`;
+            logger.info(`Successfully sent ${this.activeTcsArray.length} positions to MCU`);
+        } catch (err) {
+            logger.error('Error sending positions:', err);
+            this.elements.positionOutput.textContent = `Error sending positions: ${err.message}`;
+        }
     }
 
     async handleUploadPosition() {
@@ -1197,7 +1266,6 @@ class HeatCubeSystem {
                 const tc = this.activeTcsArray.find(t => t.id === tcId);
                 if (tc) {
                     tc.tcTemp = temp;
-                    this.viz3D.updateTcVisual(tc, this.getSelectedTcId(), !this.calibrationFinished);
                 }
             });
             
@@ -1246,6 +1314,7 @@ class HeatCubeSystem {
             tc.z = tcData.z || 0;
             return tc;
         });
+        console.log('=== activeTcsArray after loadSaveStates ===', this.activeTcsArray);
 
         this.populateActiveTcsDropdown();
         if (this.viz3D.scene) {
@@ -1280,6 +1349,14 @@ class HeatCubeSystem {
     populateActiveTcsDropdown() {
         // Preserve current selection
         const currentSelection = this.elements.selector.value;
+        const currentOptions = new Set(Array.from(this.elements.selector.options).map(o => o.value));
+        const incomingIds = new Set(this.activeTcsArray.map(tc => tc.id.toString()));
+        
+        // Only rebuild if the list of TCs actually changed
+        if (currentOptions.size === incomingIds.size && 
+            Array.from(currentOptions).every(id => incomingIds.has(id))) {
+            return; // No change needed
+        }
         
         this.elements.selector.innerHTML = '';
         for (const tc of this.activeTcsArray) {
@@ -1566,7 +1643,6 @@ class HeatCubeSystem {
                 const tc = this.activeTcsArray.find(t => t.id === tcId);
                 if (tc) {
                     tc.tcTemp = temp;
-                    this.viz3D.updateTcVisual(tc, this.getSelectedTcId(), !this.calibrationFinished);
                 }
             });
             
