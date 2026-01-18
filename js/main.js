@@ -183,9 +183,8 @@ class Visualization3D {
 
         const coldColor = new THREE.Color(this.config.coldColor);
         const hotColor = new THREE.Color(this.config.hotColor);
-        const displayColor = new THREE.Color().lerpColors(coldColor, hotColor, t);
-
-        cube.material.color.copy(displayColor);
+        let currentT = t;
+        cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
         cube.material.transparent = true;
 
         const opacityRange = this.config.opacityMax - this.config.opacityMin;
@@ -200,30 +199,43 @@ class Visualization3D {
                     // Before delay: normal scale
                     cube.scale.set(1.0, 1.0, 1.0);
                     cube.material.opacity = this.config.opacityMin + t * opacityRange;
+                    currentT = t;
+                    cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
                 } else if (elapsed < this.POP_DELAY_MS + this.POP_DURATION_MS) {
                     // During pop animation: smooth grow from 1.0 to 1.3
                     const popProgress = (elapsed - this.POP_DELAY_MS) / this.POP_DURATION_MS;
                     const easeOutScale = 1.0 + (0.3 * Math.sin(popProgress * Math.PI / 2)); // Ease out
                     cube.scale.set(easeOutScale, easeOutScale, easeOutScale);
                     cube.material.opacity = 1.0; // Bright during animation
+                    const boost = Math.min(0.25, 0.25 * popProgress);
+                    currentT = Math.min(1, t + boost * t);
+                    cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
                 } else {
                     // After animation: STAY at 1.3x and bright (no more popping)
                     cube.scale.set(1.3, 1.3, 1.3);
                     cube.material.opacity = 1.0;
+                    currentT = Math.min(1, t * 1.25);
+                    cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
                 }
             } else {
                 // Fallback: cube at normal state
                 cube.scale.set(1.0, 1.0, 1.0);
                 cube.material.opacity = this.config.opacityMin + t * opacityRange;
+                currentT = t;
+                cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
             }
         } else if (isHovered) {
             // Preserve hover effect
             cube.scale.set(1.15, 1.15, 1.15);
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
+            currentT = t;
+            cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
         } else {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
             cube.scale.set(1.0, 1.0, 1.0);
+            currentT = t;
+            cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
         }
     }
 
