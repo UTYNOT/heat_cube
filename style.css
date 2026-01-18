@@ -372,7 +372,7 @@ input[type="number"]:focus {
     min-height: auto;
     word-wrap: break-word;
     white-space: pre-wrap;
-    font-size: 0.9rem;
+    font-size: 1.1rem;
     line-height: 1.5;
 }
 
