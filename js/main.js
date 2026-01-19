@@ -279,6 +279,9 @@ class HeatCubeSystem {
         this.lastSentTcId = null; // Track the last TC ID sent over UART to prevent duplicates
         this.waitingForProbeId = null; // TC ID we're waiting for a probe response for
         this.probeRequestInterval = null; // Interval for repeatedly sending TC ID until probe received
+        this.waitingForPositionAck = false; // Track if we're waiting for position ack (TC_Probe after Set Position)
+        this.positionAckInterval = null; // Interval for repeatedly sending '0' until TC_Probe received
+        this.positionAckTimeoutId = null; // Timeout ID for stopping position ack when TC_Probe stops
         this.connectionHealthCheckInterval = null; // Interval for checking connection health
         this.lastDataReceivedTime = null; // Timestamp of last data received
 
@@ -493,7 +496,7 @@ class HeatCubeSystem {
             this.startReaderLoop();
             
             // Start connection health monitoring
-            this.startConnectionHealthCheck();
+            this.startConnectionHealthCheck(); // Start monitoring connection health
             
             logger.info("Serial port connection established successfully");
         } catch (err) {
@@ -739,9 +742,9 @@ class HeatCubeSystem {
             this.handleRequestAllPositions();
         } else if (line.startsWith("REQUEST_POSITIONS:")) {
             this.handleRequestSpecificPositions(line);
-        } //else if (line.startsWith("TC_CALIBRATE") && line.includes(":")) {
-            //this.handleTCCalibrate(line);
-        //} 
+        } else if (line.startsWith("TC_CALIBRATE") && line.includes(":")) {
+            this.handleTCCalibrate(line);
+        } 
     }
 
     // ============ MESSAGE HANDLERS ============
@@ -847,6 +850,12 @@ class HeatCubeSystem {
             if (this.waitingForProbeId === tcId) {
                 this.stopProbeRequest();
                 logger.debug(`Received TC_Probe${tcId} - stopping repeated send`);
+            }
+
+            // Reset timeout when TC_Probe is received - keep sending '0' as long as TC_Probe keeps coming
+            if (this.waitingForPositionAck) {
+                this.resetPositionAckTimeout();
+                logger.debug(`Received TC_Probe${tcId} - resetting position ack timeout`);
             }
 
             const tc = this.activeTcsArray.find(t => t.id === tcId);
@@ -1176,6 +1185,67 @@ class HeatCubeSystem {
         this.waitingForProbeId = null;
     }
 
+    stopPositionAck() {
+        // Stop repeatedly sending '0' when TC_Probe stops coming
+        if (this.positionAckInterval) {
+            clearInterval(this.positionAckInterval);
+            this.positionAckInterval = null;
+        }
+        if (this.positionAckTimeoutId) {
+            clearTimeout(this.positionAckTimeoutId);
+            this.positionAckTimeoutId = null;
+        }
+        this.waitingForPositionAck = false;
+        logger.debug('Stopped position ack - no TC_Probe received');
+    }
+
+    resetPositionAckTimeout() {
+        // Reset the timeout - TC_Probe was received, so keep sending '0'
+        if (this.positionAckTimeoutId) {
+            clearTimeout(this.positionAckTimeoutId);
+        }
+        
+        // Set timeout to stop sending if no TC_Probe received for 2 seconds
+        this.positionAckTimeoutId = setTimeout(() => {
+            logger.debug('No TC_Probe received for 2s - stopping position ack');
+            this.stopPositionAck();
+        }, 2000); // Stop if no TC_Probe for 2 seconds
+    }
+
+    startPositionAck() {
+        // Stop any existing position ack sending
+        this.stopPositionAck();
+        
+        if (!this.helper || !this.helper.writer) {
+            return;
+        }
+        
+        // Set the flag that we're waiting for position ack
+        this.waitingForPositionAck = true;
+        
+        // Send '0' immediately
+        this.helper.write('0').catch(err => {
+            logger.warn('Failed to send position ack (0) over UART:', err);
+        });
+        logger.debug('Sent position ack: 0');
+        
+        // Start timeout - will stop if no TC_Probe received
+        this.resetPositionAckTimeout();
+        
+        // Set up interval to send repeatedly every 2000ms while TC_Probe keeps coming
+        this.positionAckInterval = setInterval(() => {
+            if (this.helper && this.helper.writer && this.waitingForPositionAck) {
+                this.helper.write('0').catch(err => {
+                    logger.warn('Failed to send position ack (0) over UART:', err);
+                });
+                logger.debug('Repeatedly sending position ack: 0');
+            } else {
+                // Stop if connection lost
+                this.stopPositionAck();
+            }
+        }, 2000); // Send every 2000ms
+    }
+
     startProbeRequest(tcId) {
         // Stop any existing probe request
         this.stopProbeRequest();
@@ -1382,14 +1452,8 @@ class HeatCubeSystem {
             this.elements.positionOutput.textContent = "Thermocouple not found.";
         }
 
-        // Always send '0' over UART as acknowledgment when Set Position is clicked
-        try {
-            console.log("Writing a 0")
-            await this.helper.write('0');
-            logger.debug('Sent position-set acknowledgment (0) to MCU');
-        } catch (err) {
-            logger.warn('Failed to send position-set acknowledgment:', err);
-        }
+        // Send '0' repeatedly over UART until TC_Probe is received
+        this.startPositionAck();
     }
 
     handleTimeSlider() {
@@ -1637,7 +1701,21 @@ class HeatCubeSystem {
     }
 
     generateStandaloneHTML() {
-        // Full standalone HTML export - includes all styles and functionality
+        // Prepare thermocouple data - extract only serializable properties
+        const thermoDataForExport = this.activeTcsArray.map(tc => ({
+            id: tc.id,
+            x: tc.x || 0,
+            y: tc.y || 0,
+            z: tc.z || 0,
+            tcTemp: tc.tcTemp || null,
+            refTemp: tc.refTemp || null
+        }));
+        
+        // Escape backticks and prepare data
+        const vizConfigJson = JSON.stringify(VIZ_CONFIG).replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+        const fileDataJson = JSON.stringify(this.fileDataArray).replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+        const thermoDataJson = JSON.stringify(thermoDataForExport).replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+        
         const htmlTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1648,7 +1726,7 @@ class HeatCubeSystem {
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1115; color: #fff; overflow: hidden; }
         .container { display: flex; height: 100vh; }
-        #canvas { flex: 1; display: block; }
+        #three-container { flex: 1; height: 100%; background: #0d0d0f; }
         .panel { width: 320px; background: #1a1a1a; border-left: 1px solid #444; display: flex; flex-direction: column; overflow-y: auto; box-shadow: -2px 0 8px rgba(0, 0, 0, 0.3); }
         .panel-header { padding: 16px; border-bottom: 1px solid #333; background: #111; }
         .panel-header h3 { margin: 0; font-size: 16px; color: #0d9488; font-weight: 600; }
@@ -1666,16 +1744,19 @@ class HeatCubeSystem {
         .tc-info-field { display: flex; justify-content: space-between; margin: 6px 0; color: #ccc; }
         .tc-info-field .label { color: #aaa; font-weight: 500; }
         .tc-info-field .value { color: #fff; font-family: 'Courier New', monospace; }
-        .temp-info { background: #222; border: 1px solid #333; border-left: 3px solid #0d9488; border-radius: 4px; padding: 10px; margin-bottom: 10px; font-size: 14px; }
-        .temp-info strong { color: #0d9488; font-size: 16px; display: block; margin-bottom: 8px; }
-        .temp-row { display: flex; justify-content: space-between; margin: 6px 0; color: #ccc; }
-        .temp-row .label { color: #aaa; font-weight: 500; }
-        .temp-row .value { color: #fff; font-family: 'Courier New', monospace; }
     </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.159.0/examples/jsm/"
+        }
+    }
+    </script>
 </head>
 <body>
     <div class="container">
-        <canvas id="canvas"></canvas>
+        <div id="three-container"></div>
         <div class="panel">
             <div class="panel-header"><h3>Viewer Controls</h3></div>
             <div class="panel-section">
@@ -1695,10 +1776,13 @@ class HeatCubeSystem {
             </div>
         </div>
     </div>
-    <script>
-        const VIZ_CONFIG = ${JSON.stringify(VIZ_CONFIG)};
-        const fileData = ${JSON.stringify(this.fileDataArray)};
-        const thermoData = ${JSON.stringify(this.activeTcsArray)};
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        
+        const VIZ_CONFIG = ${vizConfigJson};
+        const fileData = ${fileDataJson};
+        const thermoData = ${thermoDataJson};
         
         function formatTimeStandalone(timeString) {
             if (!timeString) return timeString;
@@ -1707,23 +1791,239 @@ class HeatCubeSystem {
             return parts.map(p => p.padStart(2, '0')).join(':');
         }
         
-        // Simplified 2D canvas renderer for standalone export
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = window.innerWidth - 320;
-        canvas.height = window.innerHeight;
+        // Three.js 3D Visualization Setup
+        const container = document.getElementById('three-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0d0d0f);
         
-        // Basic rendering setup would go here
-        // (Full implementation would include 3D rendering or simplified visualization)
+        const { clientWidth, clientHeight } = container;
+        const camera = new THREE.PerspectiveCamera(45, clientWidth / clientHeight, 0.1, 100);
+        camera.position.set(5, 5, 5);
         
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(clientWidth, clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+        
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0.5, 0);
+        controls.update();
+        
+        const ambient = new THREE.AmbientLight(0xffffff, 1.0);
+        scene.add(ambient);
+        
+        const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+        dir.position.set(5, 10, 7);
+        scene.add(dir);
+        
+        scene.add(new THREE.GridHelper(10, 10));
+        scene.add(new THREE.AxesHelper(1.5));
+        
+        const tcObjects = {};
+        let hoveredCube = null;
+        
+        // Color mapping helper
+        function colorFromTemp(temp) {
+            if (temp == null || isNaN(temp)) return new THREE.Color(VIZ_CONFIG.coldColor);
+            const tempRange = VIZ_CONFIG.tempMax - VIZ_CONFIG.tempMin;
+            const t = Math.min(1, Math.max(0, (temp - VIZ_CONFIG.tempMin) / tempRange));
+            const coldColor = new THREE.Color(VIZ_CONFIG.coldColor);
+            const hotColor = new THREE.Color(VIZ_CONFIG.hotColor);
+            return new THREE.Color().lerpColors(coldColor, hotColor, t);
+        }
+        
+        // Update TC visual
+        function updateTcVisual(tc, selectedTcId) {
+            const cube = tcObjects[tc.id];
+            if (!cube || !tc || !cube.material) return;
+            
+            const isSelected = selectedTcId === tc.id;
+            const isHovered = cube === hoveredCube;
+            const temp = tc.tcTemp;
+            
+            if (typeof temp !== 'number') return;
+            
+            const tempRange = VIZ_CONFIG.tempMax - VIZ_CONFIG.tempMin;
+            const t = Math.min(1, Math.max(0, (temp - VIZ_CONFIG.tempMin) / tempRange));
+            
+            const displayColor = colorFromTemp(temp);
+            cube.material.color.copy(displayColor);
+            cube.material.transparent = true;
+            
+            const opacityRange = VIZ_CONFIG.opacityMax - VIZ_CONFIG.opacityMin;
+            
+            if (isSelected) {
+                cube.material.opacity = 1.0;
+                cube.scale.set(1.3, 1.3, 1.3);
+            } else if (isHovered) {
+                cube.scale.set(1.15, 1.15, 1.15);
+                cube.material.opacity = VIZ_CONFIG.opacityMin + t * opacityRange;
+            } else {
+                cube.material.opacity = VIZ_CONFIG.opacityMin + t * opacityRange;
+                cube.scale.set(1.0, 1.0, 1.0);
+            }
+        }
+        
+        // Sync TC meshes
+        function syncTcMeshes() {
+            for (const tc of thermoData) {
+                let cube = tcObjects[tc.id];
+                if (!cube) {
+                    const geometry = new THREE.BoxGeometry(
+                        VIZ_CONFIG.cubeSize,
+                        VIZ_CONFIG.cubeSize,
+                        VIZ_CONFIG.cubeSize
+                    );
+                    const material = new THREE.MeshBasicMaterial({
+                        color: VIZ_CONFIG.coldColor
+                    });
+                    cube = new THREE.Mesh(geometry, material);
+                    scene.add(cube);
+                    tcObjects[tc.id] = cube;
+                }
+                cube.position.set(tc.x || 0, tc.y || 0, tc.z || 0);
+                updateTcVisual(tc, selectedTcId);
+            }
+        }
+        
+        // Temps update from timeline
+        let currentIndex = fileData.length > 0 ? Math.max(0, fileData.length - 1) : 0;
+        function applyTempsForIndex(idx) {
+            if (idx < 0 || idx >= fileData.length) return;
+            const temps = fileData[idx].temps || [];
+            for (let i = 0; i < temps.length; i++) {
+                const tcId = i + 1;
+                const tc = thermoData.find(t => t.id === tcId);
+                if (tc) {
+                    const temp = temps[i];
+                    tc.tcTemp = (temp != null && !isNaN(temp)) ? temp : null;
+                }
+            }
+            syncTcMeshes();
+        }
+        
+        // Mouse hover detection
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        renderer.domElement.addEventListener('mousemove', (event) => {
+            const rect = container.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const cubes = Object.values(tcObjects);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (hoveredCube) {
+                hoveredCube = null;
+            }
+            
+            if (intersects.length > 0) {
+                hoveredCube = intersects[0].object;
+                renderer.domElement.style.cursor = 'pointer';
+            } else {
+                renderer.domElement.style.cursor = 'default';
+            }
+            syncTcMeshes();
+        });
+        
+        // Resize handler
+        function onWindowResize() {
+            const { clientWidth, clientHeight } = container;
+            camera.aspect = clientWidth / clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(clientWidth, clientHeight);
+        }
+        window.addEventListener('resize', onWindowResize);
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+        
+        // Controls wiring
         const timeSliderEl = document.getElementById('timeSlider');
-        timeSliderEl.max = Math.max(0, fileData.length - 1);
+        const timeDisplayEl = document.getElementById('timeDisplay');
+        if (fileData.length > 0) {
+            timeSliderEl.max = Math.max(0, fileData.length - 1);
+            timeSliderEl.value = currentIndex;
+            timeSliderEl.disabled = false;
+        } else {
+            timeSliderEl.max = 0;
+            timeSliderEl.value = 0;
+            timeSliderEl.disabled = true;
+        }
+        
+        function updateTimeDisplay() {
+            if (fileData.length === 0) {
+                timeDisplayEl.textContent = 'Time: --:--:--';
+            } else if (currentIndex >= 0 && currentIndex < fileData.length) {
+                timeDisplayEl.textContent = 'Time: ' + formatTimeStandalone(fileData[currentIndex].time);
+            } else {
+                timeDisplayEl.textContent = 'Time: --:--:--';
+            }
+        }
+        
         timeSliderEl.addEventListener('input', () => {
-            const idx = parseInt(timeSliderEl.value);
-            if (idx >= 0 && idx < fileData.length) {
-                document.getElementById('timeDisplay').textContent = 'Time: ' + formatTimeStandalone(fileData[idx].time);
+            const newIndex = parseInt(timeSliderEl.value);
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < fileData.length) {
+                currentIndex = newIndex;
+                updateTimeDisplay();
+                applyTempsForIndex(currentIndex);
+                updateTcInfo(selectedTcId);
             }
         });
+        
+        // TC Select
+        const tcSelectEl = document.getElementById('tcSelect');
+        const tcSelectBtn = document.getElementById('tcSelectBtn');
+        const tcInfoEl = document.getElementById('tcInfo');
+        tcSelectEl.innerHTML = '';
+        thermoData.forEach(tc => {
+            const opt = document.createElement('option');
+            opt.value = tc.id;
+            opt.textContent = 'TC ' + tc.id;
+            tcSelectEl.appendChild(opt);
+        });
+        let selectedTcId = thermoData.length ? thermoData[0].id : 0;
+        if (tcSelectEl.options.length > 0) tcSelectEl.value = selectedTcId;
+        
+        function updateTcInfo(tcId) {
+            const tc = thermoData.find(t => t.id === Number(tcId));
+            if (!tc) {
+                tcInfoEl.innerHTML = '<p style="color: #aaa; font-size: 12px;">TC not found</p>';
+                return;
+            }
+            const fmt = (v) => (v == null || isNaN(v)) ? '--' : parseFloat(v).toFixed(2);
+            const temp = fmt(tc.tcTemp);
+            const x = fmt(tc.x);
+            const y = fmt(tc.y);
+            const z = fmt(tc.z);
+            const colorObj = colorFromTemp(parseFloat(tc.tcTemp));
+            const colorHex = '#' + Math.round(colorObj.r * 255).toString(16).padStart(2, '0') +
+                           Math.round(colorObj.g * 255).toString(16).padStart(2, '0') +
+                           Math.round(colorObj.b * 255).toString(16).padStart(2, '0');
+            tcInfoEl.innerHTML = '<div class="tc-info-card" style="border-left-color: ' + colorHex + '"><strong>🌡️ TC #' + tcId + '</strong><div class="tc-info-field"><span class="label">Temp</span><span class="value">' + temp + '°C</span></div><div class="tc-info-field"><span class="label">X</span><span class="value">' + x + 'mm</span></div><div class="tc-info-field"><span class="label">Y</span><span class="value">' + y + 'mm</span></div><div class="tc-info-field"><span class="label">Z</span><span class="value">' + z + 'mm</span></div></div>';
+        }
+        
+        tcSelectBtn.addEventListener('click', () => {
+            selectedTcId = Number(tcSelectEl.value);
+            updateTcInfo(selectedTcId);
+            syncTcMeshes();
+        });
+        
+        // Initial state - apply temps and sync
+        if (fileData.length > 0 && currentIndex >= 0 && currentIndex < fileData.length) {
+            applyTempsForIndex(currentIndex);
+        }
+        updateTimeDisplay();
+        if (thermoData.length > 0) {
+            updateTcInfo(selectedTcId);
+            syncTcMeshes();
+        }
     </script>
 </body>
 </html>`;

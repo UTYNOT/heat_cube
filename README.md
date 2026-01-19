@@ -264,16 +264,20 @@ Data model for individual thermocouples:
    - Click "Save Positions To CSV" to send all positions to MCU
    - Positions are saved to `position.csv` on the MCU's SD card
 
+6. **Load Positions**
+   - Click "Upload Positions from CSV" to request all positions stored in 'position.csv' on the MCU's SD card to be loaded
+   - Positions are then stored in the local storage
+
 ### Measurement Mode
 
 1. **Switch to Measurement**
    - Click "Finish Calibration" to switch MCU to MeasureState
    - The MCU continuously sends `TC: temperature` messages
    - All thermocouples are measured in sequence
+   - Can click "Enter Calibration" to switch MCU to CalibrationState
 
 2. **Live Visualisation**
    - 3D cubes update colors in real-time based on temperature
-   - Selected TC is highlighted with 1.3x scale
    - Temperature data displays in the Live Data section
 
 ### Data Playback
