@@ -38,9 +38,6 @@ class Visualization3D {
         this.lastActiveTcsArray = [];
         this.lastSelectedTcId = null;
         this.lastCalibrationMode = true;
-        this.tcProbeActivationTime = {}; // Track when each TC was activated by TC_Probe: {tcId: timestamp}
-        this.POP_DELAY_MS = 150; // Delay before pop effect shows (ms)
-        this.POP_DURATION_MS = 400; // Duration of pop effect (ms)
     }
 
     init() {
@@ -183,59 +180,25 @@ class Visualization3D {
 
         const coldColor = new THREE.Color(this.config.coldColor);
         const hotColor = new THREE.Color(this.config.hotColor);
-        let currentT = t;
-        cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
+        const displayColor = new THREE.Color().lerpColors(coldColor, hotColor, t);
+
+        cube.material.color.copy(displayColor);
         cube.material.transparent = true;
 
         const opacityRange = this.config.opacityMax - this.config.opacityMin;
         
         if (isSelected && isCalibrationMode) {
-            // Pop effect - plays ONCE when TC is first selected, then stays popped
-            const activationTime = this.tcProbeActivationTime[tc.id];
-            if (activationTime !== undefined) {
-                const elapsed = Date.now() - activationTime;
-                
-                if (elapsed < this.POP_DELAY_MS) {
-                    // Before delay: normal scale
-                    cube.scale.set(1.0, 1.0, 1.0);
-                    cube.material.opacity = this.config.opacityMin + t * opacityRange;
-                    currentT = t;
-                    cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
-                } else if (elapsed < this.POP_DELAY_MS + this.POP_DURATION_MS) {
-                    // During pop animation: smooth grow from 1.0 to 1.3
-                    const popProgress = (elapsed - this.POP_DELAY_MS) / this.POP_DURATION_MS;
-                    const easeOutScale = 1.0 + (0.3 * Math.sin(popProgress * Math.PI / 2)); // Ease out
-                    cube.scale.set(easeOutScale, easeOutScale, easeOutScale);
-                    cube.material.opacity = 1.0; // Bright during animation
-                    const boost = Math.min(0.25, 0.25 * popProgress);
-                    currentT = Math.min(1, t + boost * t);
-                    cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
-                } else {
-                    // After animation: STAY at 1.3x and bright (no more popping)
-                    cube.scale.set(1.3, 1.3, 1.3);
-                    cube.material.opacity = 1.0;
-                    currentT = Math.min(1, t * 1.25);
-                    cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
-                }
-            } else {
-                // Fallback: cube at normal state
-                cube.scale.set(1.0, 1.0, 1.0);
-                cube.material.opacity = this.config.opacityMin + t * opacityRange;
-                currentT = t;
-                cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
-            }
+            // Only scale up, pop, and brighten in calibration mode
+            cube.material.opacity = 1.0;
+            cube.scale.set(1.3, 1.3, 1.3);
         } else if (isHovered) {
             // Preserve hover effect
             cube.scale.set(1.15, 1.15, 1.15);
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
-            currentT = t;
-            cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
         } else {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
             cube.scale.set(1.0, 1.0, 1.0);
-            currentT = t;
-            cube.material.color.copy(new THREE.Color().lerpColors(coldColor, hotColor, currentT));
         }
     }
 
@@ -310,25 +273,12 @@ class HeatCubeSystem {
         this.referenceTimestamp = 0;
         this.currentCalibrateBatch = {};
         this.previousTcTemps = {};
-        this.tcTempTimestamps = {}; // Track when temperatures were recorded: {tcId: timestamp}
-        this.calibrationHistory = []; // Large array to store all TC_CALIBRATE readings: [{tcId, temp, timestamp}, ...]
-        this.lastSelectedTcId = null; // Track last auto-selected TC to avoid duplicate selections
-        // Windowed spike detection tracking per TC
-        this.tcSpikeWindow = {}; // { [tcId]: { baselineTemp:number, baselineTime:number } }
-        this.lastSpikeAt = {}; // { [tcId]: timestamp of last auto-select to apply cooldown }
         
         // User interaction tracking
         this.userSelectedTc = false; // Track if user manually selected a TC
         this.lastSentTcId = null; // Track the last TC ID sent over UART to prevent duplicates
         this.waitingForProbeId = null; // TC ID we're waiting for a probe response for
         this.probeRequestInterval = null; // Interval for repeatedly sending TC ID until probe received
-        // Repeated '0' sender for Set Position acknowledgment
-        this.waitingForZeroAck = false; // True while repeatedly sending '0' awaiting TC_CALIBRATE
-        this.zeroAckInterval = null; // Interval handle for repeated '0' sends
-        this.zeroAckStartedAt = 0; // Timestamp when zero-ack loop started
-        this.lastProbeSeenAt = 0; // Timestamp of last TC_Probe received
-        this.probeSilenceCleared = false; // Whether we've cleared visuals due to probe silence
-        this.probeSilenceCheckInterval = null; // Interval for clearing pop when no TC_Probe
 
         // UI Elements
         this.initUIElements();
@@ -390,17 +340,29 @@ class HeatCubeSystem {
         // Track if we're programmatically changing the dropdown (to prevent change event from interfering)
         this.isProgrammaticDropdownChange = false;
         
-        // Dropdown change event - ONLY for display, does NOT select TC or light up cube
-        // Selection only happens via: temperature change, cube click, or button press
+        // Dropdown change event - only update UI, don't send over UART (button click sends it)
         this.elements.selector.addEventListener('change', (e) => {
-            // Skip if this is a programmatic change from cube click/temp change
+            // Skip if this is a programmatic change from cube click
             if (this.isProgrammaticDropdownChange) {
                 this.isProgrammaticDropdownChange = false;
                 return;
             }
             
-            // Dropdown change does NOT trigger selection - it's informational only
-            // Don't call selectThermocouple or syncTcMeshes
+            const tcId = parseInt(e.target.value);
+            if (!isNaN(tcId)) {
+                this.userSelectedTc = true;
+                // Update UI elements only - don't send over UART
+                this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
+                
+                const tc = this.activeTcsArray.find(t => t.id === tcId);
+                if (tc) {
+                    this.elements.posXInput.value = tc.x || 0;
+                    this.elements.posYInput.value = tc.y || 0;
+                    this.elements.posZInput.value = tc.z || 0;
+                }
+                
+                this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
+            }
         });
         
         // Canvas click handler will be set up after viz3D is initialised
@@ -411,8 +373,6 @@ class HeatCubeSystem {
         this.loadFileData();
         this.loadSaveStates();
         this.viz3D.init();
-        // Start monitoring for TC_Probe silence to clear pop effect
-        this.startProbeSilenceMonitor();
         
         // Set up canvas click handler after initialisation
         if (this.viz3D.renderer) {
@@ -431,36 +391,10 @@ class HeatCubeSystem {
             });
         }
         
-        // No default selection on init; visuals wait for TC_Probe
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
-        this.elements.selectedTc.textContent = 'Selected TC: none';
+        this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
         
         await sleep(500);
         await this.tryAutoConnect();
-    }
-
-    startProbeSilenceMonitor() {
-        if (this.probeSilenceCheckInterval) {
-            clearInterval(this.probeSilenceCheckInterval);
-        }
-        const CHECK_MS = 200;
-        this.probeSilenceCheckInterval = setInterval(() => {
-            const now = Date.now();
-            const silence = now - (this.lastProbeSeenAt || 0);
-            const threshold = UART_CONFIG.PROBE_SILENCE_MS || 1500;
-            if (silence >= threshold) {
-                if (!this.probeSilenceCleared) {
-                    // Clear pop effect and de-select any probe-driven highlight
-                    this.viz3D.tcProbeActivationTime = {};
-                    this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
-                    this.probeSilenceCleared = true;
-                    logger.debug('Cleared pop effect due to TC_Probe silence');
-                }
-            } else {
-                // Probe messages flowing again; allow pop when the next TC_Probe arrives
-                this.probeSilenceCleared = false;
-            }
-        }, CHECK_MS);
     }
 
     // ============ SERIAL PORT MANAGEMENT ============
@@ -622,7 +556,7 @@ class HeatCubeSystem {
 
     processLine(line) {
         if (!line) return;
-        //console.log('=== Processing line: ===', line);
+        console.log('=== Processing line: ===', line);
         // High-frequency messages that should NOT be logged (even in DEBUG mode)
         const highFrequencyPatterns = [
             "FILE_DATA:",
@@ -648,6 +582,7 @@ class HeatCubeSystem {
 
         // Process different message types
         if (line.startsWith("Active TCs:")) {
+            console.log('=== Active TCs: ===', line);
             this.handleActiveTCs(line);
         } else if (line.startsWith("CalibrationState") || line.startsWith("MeasureState")) {
             this.handleStateChange(line);
@@ -661,8 +596,6 @@ class HeatCubeSystem {
             this.handleFileData(line);
         } else if (line.startsWith("TC_Probe")) {
             this.handleTCProbe(line);
-        } else if (line.startsWith("TC_CALIBRATE") && line.includes(":")) {
-            this.handleTCCalibrate(line);
         } else if (line.startsWith("TC") && line.includes(":")) {
             this.handleTCTemperature(line);
         } else if (line.startsWith("LOAD_POSITIONS:")) {
@@ -673,7 +606,9 @@ class HeatCubeSystem {
             this.handleRequestAllPositions();
         } else if (line.startsWith("REQUEST_POSITIONS:")) {
             this.handleRequestSpecificPositions(line);
-        }
+        } //else if (line.startsWith("TC_CALIBRATE") && line.includes(":")) {
+            //this.handleTCCalibrate(line);
+        //} 
     }
 
     // ============ MESSAGE HANDLERS ============
@@ -691,8 +626,7 @@ class HeatCubeSystem {
         localStorage.setItem('thermocouples', JSON.stringify(this.activeTcsArray));
         console.log('=== activeTcsArray after handleActiveTCs ===', this.activeTcsArray);
         this.populateActiveTcsDropdown();
-        // Do not light any cube from dropdown/defaults
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+        this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
         this.elements.output.textContent = line;
     }
 
@@ -728,8 +662,7 @@ class HeatCubeSystem {
     handleSoftwareInit() {
         this.loadSaveStates();
         this.viz3D.init();
-        // Keep visuals neutral on software init
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+        this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
     }
 
     handleSoftwareReset() {
@@ -776,13 +709,6 @@ class HeatCubeSystem {
             const tcId = parseInt(probeMatch[1]);
             const probeTemp = parseFloat(probeMatch[2]);
             const refTemp = parseFloat(probeMatch[3]);
-            // Record that we just saw a probe; used to detect 'no probe' state
-            this.lastProbeSeenAt = Date.now();
-            this.probeSilenceCleared = false;
-            // Pop effect should be driven only by TC_Probe
-            if (!this.viz3D.tcProbeActivationTime[tcId]) {
-                this.viz3D.tcProbeActivationTime[tcId] = Date.now();
-            }
 
             // Stop sending if we received the probe we were waiting for
             if (this.waitingForProbeId === tcId) {
@@ -801,13 +727,21 @@ class HeatCubeSystem {
                 this.elements.posXInput.value = tc.x || 0;
                 this.elements.posYInput.value = tc.y || 0;
                 this.elements.posZInput.value = tc.z || 0;
+                this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
                 
-                // ⭐ THIS IS THE AUTHORITATIVE CUBE LIGHTING: TC_Probe ID lights up the cube
-                // Force isCalibrationMode=true so the probe gets the pop effect
-                this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, true);
-                
-                // Display probe data in Live Data section - simple single line format
-                this.elements.tcData.textContent = `Probe: ${probeTemp.toFixed(2)}°C | Ref: ${refTemp.toFixed(2)}°C | Pos: X:${(tc.x || 0).toFixed(2)} Y:${(tc.y || 0).toFixed(2)} Z:${(tc.z || 0).toFixed(2)} mm`;
+                // Display formatted probe data in Live Data section (compact layout)
+                this.elements.tcData.innerHTML = `
+                    <div style="background: #f8f9fa; padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--primary-blue, #0f5495);">
+                        <strong style="color: #0f5495; display: block; margin-bottom: 6px; font-size: 13px;">🌡️ TC #${tcId}</strong>
+                        <div style="display: flex; justify-content: space-between; margin: 4px 0; font-family: 'Courier New', monospace; font-size: 12px;">
+                            <span style="color: #666;">Probe: <strong style="color: #000;">${probeTemp.toFixed(2)}°C</strong></span>
+                            <span style="color: #666; margin-left: 12px;">Ref: <strong style="color: #000;">${refTemp.toFixed(2)}°C</strong></span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin: 4px 0; font-family: 'Courier New', monospace; font-size: 12px;">
+                            <span style="color: #666;">Position: <strong style="color: #000;">X:${(tc.x || 0).toFixed(2)} Y:${(tc.y || 0).toFixed(2)} Z:${(tc.z || 0).toFixed(2)} mm</strong></span>
+                        </div>
+                    </div>
+                `;
             }
         } else {
             // Fallback: show raw message if parsing fails
@@ -820,57 +754,13 @@ class HeatCubeSystem {
         if (match) {
             const tcId = parseInt(match[1]);
             const temp = parseFloat(match[2]);
-            const now = Date.now();
             
-            // Store in history array
-            this.calibrationHistory.push({ tcId, temp, timestamp: now });
-            
-            // Keep history to last 1000 readings (manageable size)
-            if (this.calibrationHistory.length > 1000) {
-                this.calibrationHistory.shift();
-            }
-            
-            // Store in current batch
             this.currentCalibrateBatch[tcId] = temp;
             
             const tcObj = this.activeTcsArray.find(tc => tc.id === tcId);
             if (tcObj) {
                 tcObj.update(temp, tcObj.refTemp);
-                
-                // Validate temperature
-                if (temp < CalibrationConfig.VALID_TEMP_MAX) {
-                    const prevTemp = this.previousTcTemps[tcId];
-                    
-                    if (prevTemp !== undefined) {
-                        // Calculate temperature change (positive = spike/increase, negative = drop/decrease)
-                        const tempChange = temp - prevTemp;
-                        
-                        // Only auto-select if temperature INCREASES (spike) by threshold amount
-                        // Ignore temperature drops
-                        if (tempChange >= CalibrationConfig.THRESHOLD_MIN) {
-                            // Avoid duplicate selections of the same TC
-                            if (this.lastSelectedTcId !== tcId) {
-                                logger.info(`🌡️ Temperature spike on TC ${tcId}: +${tempChange.toFixed(2)}°C (${prevTemp.toFixed(2)}°C → ${temp.toFixed(2)}°C)`);
-                                console.log(`[TEMP SPIKE] TC ${tcId}: +${tempChange.toFixed(2)}°C increase detected - auto-selecting`);
-                                
-                                // Auto-select this TC (updates UI and sends over UART)
-                                this.selectThermocouple(tcId, true).catch(err => {
-                                    logger.warn(`Failed to auto-select TC ${tcId} on temp spike:`, err);
-                                });
-                                
-                                this.lastSelectedTcId = tcId;
-                            }
-                        }
-                    }
-                    
-                    // Update tracking for next comparison
-                    this.previousTcTemps[tcId] = temp;
-                    this.tcTempTimestamps[tcId] = now;
-                }
-                
-                // Sync 3D visualization - pass 0 for selectedTcId so NO cube is selected/popped during TC_CALIBRATE
-                // Only TC_Probe should trigger pop effects
-                this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+                // Don't call updateTcVisual here - let the render loop handle it
             }
             
             const receivedTCs = Object.keys(this.currentCalibrateBatch)
@@ -882,7 +772,6 @@ class HeatCubeSystem {
             }
         }
     }
-
     handleTCTemperature(line) {
         const match = line.match(/TC(\d+):\s*([\d.]+)/);
         if (match) {
@@ -891,37 +780,28 @@ class HeatCubeSystem {
             
             const tcObj = this.activeTcsArray.find(tc => tc.id === tcId);
             if (tcObj) {
-                const now = Date.now();
-                // Initialize or update window baseline per TC
-                let window = this.tcSpikeWindow[tcId];
-                if (!window) {
-                    window = { baselineTemp: temp, baselineTime: now };
-                    this.tcSpikeWindow[tcId] = window;
-                } else {
-                    const elapsed = now - window.baselineTime;
-                    const deltaFromBaseline = temp - window.baselineTemp;
-                    const bigDrop = (window.baselineTemp - temp) >= CalibrationConfig.DROP_LARGE_THRESHOLD;
+                // HIDDEN: Auto-detection of temperature spikes
+                /*
+                // Check for high temperature change
+                const previousTemp = this.previousTcTemps[tcId];
+                if (previousTemp !== undefined) {
+                    const tempChange = Math.abs(temp - previousTemp);
                     
-                    // Reset baseline on large negative drop or expired window
-                    if (bigDrop || elapsed > CalibrationConfig.SPIKE_WINDOW_SECONDS * 1000) {
-                        this.tcSpikeWindow[tcId] = { baselineTemp: temp, baselineTime: now };
-                    } else if (deltaFromBaseline >= CalibrationConfig.THRESHOLD_MIN) {
-                        // Positive spike within window – apply cooldown and select
-                        const lastSentAt = this.lastSpikeAt[tcId] || 0;
-                        if (now - lastSentAt >= CalibrationConfig.SPIKE_COOLDOWN_MS) {
-                            this.lastSpikeAt[tcId] = now;
-                            logger.debug(`Window spike TC ${tcId}: +${deltaFromBaseline.toFixed(2)}°C in ${Math.round(elapsed/100)/10}s`);
-                            // Auto-select (updates UI and sends over UART repeatedly until probe)
-                            this.selectThermocouple(tcId, true).catch(err => {
-                                logger.warn(`Failed to auto-select TC ${tcId} on temp spike:`, err);
-                            });
+                    // If temperature change is above threshold (e.g., 4°C), send TC ID over UART
+                    if (tempChange >= CalibrationConfig.THRESHOLD_MIN) {
+                        if (this.helper && this.helper.writer) {
+                            try {
+                                this.helper.write(String(tcId));
+                                logger.debug(`High temp change detected on TC ${tcId}: ${tempChange.toFixed(2)}°C - sent to MCU`);
+                            } catch (err) {
+                                logger.warn(`Failed to send high temp change notification for TC ${tcId}: ${err}`);
+                            }
                         }
-                        // Re-arm baseline to current after spike detection
-                        this.tcSpikeWindow[tcId] = { baselineTemp: temp, baselineTime: now };
                     }
                 }
-
-                // Track immediate previous temperature as well (for other logic)
+                */
+                
+                // Store previous temp and update
                 this.previousTcTemps[tcId] = temp;
                 tcObj.update(temp, tcObj.refTemp);
                 // Don't call updateTcVisual here - let the render loop handle it
@@ -960,8 +840,7 @@ class HeatCubeSystem {
         }
 
         localStorage.setItem('thermocouples', JSON.stringify(this.activeTcsArray));
-        // Positions loading should not change visual selection
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+        this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
         this.elements.positionOutput.textContent = `Loaded ${successCount} positions from MCU`;
     }
 
@@ -1193,76 +1072,6 @@ class HeatCubeSystem {
         }, 500); // Send every 500ms
     }
 
-    stopZeroAckRequest() {
-        // Stop repeatedly sending '0' when TC_CALIBRATE is seen (ack)
-        if (this.zeroAckInterval) {
-            clearInterval(this.zeroAckInterval);
-            this.zeroAckInterval = null;
-        }
-        if (this.waitingForZeroAck) {
-            this.waitingForZeroAck = false;
-            if (this.elements.positionOutput) {
-                const currentText = this.elements.positionOutput.textContent || '';
-                this.elements.positionOutput.textContent = currentText;
-            }
-            logger.debug('Stopped repeated 0 send loop');
-        }
-    }
-
-    startZeroAckRequest() {
-        // Begin repeatedly sending '0' until TC_Probe messages stop arriving (no TC selected)
-        this.stopZeroAckRequest();
-        if (!this.helper || !this.helper.writer) return;
-
-        this.waitingForZeroAck = true;
-        this.zeroAckStartedAt = Date.now();
-
-        // Send immediately
-        this.helper.write('0').catch(err => {
-            logger.warn('Failed to send initial 0 for clear-selection:', err);
-        });
-
-        if (this.elements.positionOutput) {
-            this.elements.positionOutput.textContent = 'Clearing selection: sending 0 until TC_Probe stops...';
-        }
-
-        // Keep sending every 400ms until no TC_Probe seen for PROBE_GONE_MS or timeout
-        const INTERVAL_MS = UART_CONFIG.ZERO_RESEND_INTERVAL_MS || 400;
-        const TIMEOUT_MS = UART_CONFIG.ZERO_RESEND_TIMEOUT_MS || 10000;
-        const PROBE_GONE_MS = UART_CONFIG.PROBE_SILENCE_MS || 1500; // consider 'no probe' if none seen for this duration
-        this.zeroAckInterval = setInterval(() => {
-            if (!this.waitingForZeroAck) {
-                this.stopZeroAckRequest();
-                return;
-            }
-            const now = Date.now();
-            // Stop when no probe has been seen for PROBE_GONE_MS
-            const sinceProbe = now - (this.lastProbeSeenAt || 0);
-            if (this.lastProbeSeenAt > 0 && sinceProbe >= PROBE_GONE_MS) {
-                logger.info('No TC_Probe observed recently; selection cleared.');
-                if (this.elements.positionOutput) {
-                    this.elements.positionOutput.textContent = '✓ No TC_Probe — selection cleared';
-                }
-                this.stopZeroAckRequest();
-                return;
-            }
-            // Safety timeout
-            if (now - this.zeroAckStartedAt > TIMEOUT_MS) {
-                logger.warn('Timeout while attempting to clear selection (still seeing TC_Probe)');
-                this.stopZeroAckRequest();
-                return;
-            }
-            if (this.helper && this.helper.writer) {
-                this.helper.write('0').catch(err => {
-                    logger.warn('Failed to resend 0 for clear-selection:', err);
-                });
-                logger.debug('Repeatedly sending 0 until TC_Probe stops');
-            } else {
-                this.stopZeroAckRequest();
-            }
-        }, INTERVAL_MS);
-    }
-
     async selectThermocouple(tcId, forceSend = false) {
         // Updates the "Selected TC:" display and sends TC ID over UART if changed
         this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
@@ -1273,8 +1082,8 @@ class HeatCubeSystem {
             this.elements.posYInput.value = tc.y || 0;
             this.elements.posZInput.value = tc.z || 0;
         }
-        // Do NOT visually select here; wait for TC_Probe to light/pop
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+        
+        this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
         
         // If forceSend is true, start repeatedly sending until probe received
         if (forceSend && this.helper && this.helper.writer) {
@@ -1308,18 +1117,15 @@ class HeatCubeSystem {
         localStorage.setItem('calibrationFinished', JSON.stringify(this.calibrationFinished));
 
         if (this.calibrationFinished) {
-            // Entering measurement mode - clear all pop effects
-            this.viz3D.tcProbeActivationTime = {}; // Clear pop effect timers
             await this.helper.write("measure");
             this.elements.finishedCalibrationBtn.textContent = "Enter Calibration Mode";
         } else {
-            // Entering calibration mode
             await this.helper.write("calibrate");
             this.elements.finishedCalibrationBtn.textContent = "Finish Calibration";
         }
 
         // Refresh visualization with correct calibration mode state
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+        this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
     }
 
     async handleSelectFile() {
@@ -1436,19 +1242,19 @@ class HeatCubeSystem {
             tc.z = z;
             localStorage.setItem('thermocouples', JSON.stringify(this.activeTcsArray));
             this.elements.positionOutput.textContent = `Saved position for TC ${tcId} with X:${x}, Y:${y}, Z:${z}`;
-            // Time scrub does not select a TC visually
-            this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+            this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
         } else {
             this.elements.positionOutput.textContent = "Thermocouple not found.";
         }
 
-        // Immediately clear any probe-driven visuals and label
-        this.viz3D.tcProbeActivationTime = {};
-        this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
-        this.elements.selectedTc.textContent = 'Selected TC: none';
-
-        // Begin repeatedly sending '0' until TC_Probe stops (clear selection on MCU)
-        this.startZeroAckRequest();
+        // Always send '0' over UART as acknowledgment when Set Position is clicked
+        try {
+            console.log("Writing a 0")
+            await this.helper.write('0');
+            logger.debug('Sent position-set acknowledgment (0) to MCU');
+        } catch (err) {
+            logger.warn('Failed to send position-set acknowledgment:', err);
+        }
     }
 
     handleTimeSlider() {
@@ -1514,7 +1320,7 @@ class HeatCubeSystem {
 
         this.populateActiveTcsDropdown();
         if (this.viz3D.scene) {
-            this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+            this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
         }
     }
 
@@ -1545,8 +1351,8 @@ class HeatCubeSystem {
     populateActiveTcsDropdown() {
         // Preserve current selection
         const currentSelection = this.elements.selector.value;
-        const currentOptions = new Set(Array.from(this.elements.selector.options).map(o => o.value));
-        const incomingIds = new Set(this.activeTcsArray.map(tc => tc.id.toString()));
+        const currentOptions = new Set(Array.from(this.elements.selector.options).filter(o => o).map(o => o.value));
+        const incomingIds = new Set(this.activeTcsArray.filter(tc => tc && tc.id != null).map(tc => tc.id.toString()));
         
         // Only rebuild if the list of TCs actually changed
         if (currentOptions.size === incomingIds.size && 
@@ -1556,6 +1362,7 @@ class HeatCubeSystem {
         
         this.elements.selector.innerHTML = '';
         for (const tc of this.activeTcsArray) {
+            if (!tc || tc.id == null) continue; // Skip invalid TCs
             const option = document.createElement('option');
             option.value = tc.id;
             option.textContent = `TC ${tc.id}`;
@@ -1842,7 +1649,7 @@ class HeatCubeSystem {
                 }
             });
             
-            this.viz3D.syncTcMeshes(this.activeTcsArray, 0, !this.calibrationFinished);
+            this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
             await new Promise(resolve => requestAnimationFrame(resolve));
             await sleep(33);
         }

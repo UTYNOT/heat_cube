@@ -46,9 +46,10 @@ Heat Cube Visualiser is a web-based application that connects to a microcontroll
 
 ### ⚙️ Calibration System
 - Automatic detection of active thermocouples
-- Smart calibration that detects temperature changes
-- Configurable thresholds for temperature change detection
+- TC_Probe message-driven visual selection (MCU controls which TC lights up)
+- Configurable thresholds for temperature monitoring
 - Baseline reference temperature tracking
+- Automatic spike detection (currently disabled - can be re-enabled in code)
 
 ### 📊 Data Playback
 - Load historical temperature data from MCU CSV files
@@ -67,7 +68,8 @@ Heat Cube Visualiser is a web-based application that connects to a microcontroll
 - Grid and axes helpers for spatial reference
 - Temperature-based colour interpolation
 - Opacity variation based on temperature
-- Selected thermocouple scaling (1.3x)
+- Visual "pop" effect for selected thermocouples (controlled by TC_Probe messages from MCU)
+- Proportional color boost during selection animation
 
 ## Project Structure
 
@@ -78,7 +80,12 @@ heat_cube/
 ├── README.md              # This file
 ├── position.csv           # Empty placeholder for position data
 ├── js/
-│   ├── main.js           # Main application logic (1785 lines)
+│   ├── main.js           # Main application logic
+│   ├── config.js         # Configuration settings (visualization, calibration, UART)
+│   ├── logger.js         # Logging system with configurable levels
+│   ├── utils.js          # Utility functions (formatTime, sleep, throttle)
+│   ├── uart-helper.js    # Serial communication wrapper
+│   ├── thermocouple.js   # Thermocouple data model
 │   ├── animation.js      # Logo animation handling
 │   ├── OrbitControls.js  # Three.js orbit controls extension
 │   └── three.module.js   # Three.js library (bundled)
@@ -303,12 +310,13 @@ Data model for individual thermocouples:
 
 ## Configuration
 
-### Visualisation Settings
+### Configuration Settings
 
-Located at the top of `js/main.js`:
+Located in `js/config.js`:
 
+**Visualization Settings:**
 ```javascript
-const VIZ_CONFIG = {
+export const VIZ_CONFIG = {
     tempMin: 20,           // Minimum temperature for colour scale (°C)
     tempMax: 35,           // Maximum temperature for colour scale (°C)
     coldColor: 0xAF0000,   // Colour for cold temperatures (dark red)
@@ -319,16 +327,27 @@ const VIZ_CONFIG = {
 };
 ```
 
-### Calibration Settings
-
+**Calibration Settings:**
 ```javascript
-const CalibrationConfig = {
-    THRESHOLD_MIN: 2.0,              // Minimum temp change to trigger (°C)
+export const CalibrationConfig = {
+    THRESHOLD_MIN: 2.0,              // Minimum temp change threshold (°C)
     THRESHOLD_MAX: 15.0,             // Maximum temp change to consider (°C)
+    DROP_LARGE_THRESHOLD: 3.0,       // Large temperature drop threshold (°C)
+    SPIKE_WINDOW_SECONDS: 5,         // Spike detection window (seconds)
+    SPIKE_COOLDOWN_MS: 2000,         // Cooldown between spike detections (ms)
     VALID_TEMP_MAX: 2000,            // Maximum valid temperature (°C)
     NUM_TCS: 8,                      // Expected number of thermocouples
     REFERENCE_UPDATE_INTERVAL: 20000, // Baseline update interval (ms)
-    TEMP_DROP_THRESHOLD: 0.75        // Temp drop to ignore (°C)
+    TEMP_DROP_THRESHOLD: 0.75        // Minor temp drop to ignore (°C)
+};
+```
+
+**UART Settings:**
+```javascript
+export const UART_CONFIG = {
+    PROBE_SILENCE_MS: 1500,          // Time before clearing pop effect (ms)
+    ZERO_RESEND_INTERVAL_MS: 500,    // Interval for resending '0' (ms)
+    ZERO_RESEND_TIMEOUT_MS: 10000    // Timeout for zero-ack loop (ms)
 };
 ```
 
@@ -371,7 +390,9 @@ window.setLogLevel('ERROR');  // Minimal logging
   - Example: `TC_CALIBRATE1: 25.5`
 - `TC<id>: <temperature>` - Measurement temperature data
   - Example: `TC1: 26.3`
-- `TC_Probe<id>, Ref Data: <probe_temp>,<ref_temp>` - Selected TC details
+- `TC_Probe(<id>)` - Probe selection notification (triggers visual pop effect)
+  - Example: `TC_Probe(1)`
+- `TC_Probe<id>, Ref Data: <probe_temp>,<ref_temp>` - Selected TC details (deprecated format)
   - Example: `TC_Probe1, Ref Data: 25.5,23.2`
 - `FILE_DATA:<line>` - File data line (CSV row)
 - `LOAD_POSITIONS:<data>` - Position data from CSV
@@ -381,12 +402,15 @@ window.setLogLevel('ERROR');  // Minimal logging
 
 The application uses a queue-based processing system to handle high-frequency messages:
 
-1. **Reader Loop**: Continuously reads from serial port
+1. **Reader Loop**: Continuously reads from serial port via UARTHelper
 2. **Line Parsing**: Splits incoming data by newlines
 3. **Queue System**: Adds lines to processing queue (max 1000 items)
 4. **Batch Processing**: Processes 50 lines at a time with yield to event loop
 5. **Overflow Protection**: Drops oldest messages if queue exceeds limit
 6. **Error Recovery**: Attempts to recover from buffer overruns
+7. **TC_Probe Authority**: Only TC_Probe messages from MCU trigger visual selection/pop effects
+8. **Probe Silence Monitoring**: Automatically clears pop effects when TC_Probe messages stop
+9. **Resend Loops**: Continuously resends selection commands until MCU acknowledges via TC_Probe
 
 ### Data Storage
 
@@ -411,6 +435,14 @@ The application uses a queue-based processing system to handle high-frequency me
 - Linear interpolation between `coldColor` and `hotColor`
 - Based on normalised temperature: `(temp - tempMin) / (tempMax - tempMin)`
 - Opacity varies linearly with temperature
+- Proportional color boost during pop animation for selected TCs
+
+**Visual Selection System:**
+- Only TC_Probe messages from MCU trigger visual "pop" effects
+- Pop animation: delayed (150ms), one-time scale to 1.3x with brightness increase
+- Pop effect cleared automatically when TC_Probe messages stop (configurable silence threshold)
+- Dropdown and manual selection update UI but do not trigger pop until MCU confirms via TC_Probe
+- No pop animation during TC_CALIBRATE mode to avoid visual clutter
 
 **Performance:**
 - Single geometry instance shared by all TC cubes
@@ -457,18 +489,47 @@ HH:MM:SS,25.5,26.1,24.8,...
 
 ## Dependencies
 
-- **Three.js v0.159.0**: 3D graphics library (loaded via CDN)
+- **Three.js v0.159.0**: 3D graphics library (loaded via CDN from jsdelivr)
 - **OrbitControls**: Camera controls (included in repository)
 - **Web Serial API**: Native browser API (no library needed)
 
-## Development Notes
+## Code Architecture
 
-### Code Organisation
+The application follows a modular ES6 module structure with clear separation of concerns:
 
-The codebase follows a modular structure:
-- Classes are organised by functionality
-- Clear separation between UI, 3D visualisation, and communication
-- Event-driven architecture with centralised message routing
+### Module Organization
+
+**Core Modules:**
+- `main.js` - Application orchestration, UI management, serial communication handling
+- `config.js` - Centralized configuration exports (VIZ_CONFIG, CalibrationConfig, UART_CONFIG)
+- `logger.js` - Logging system with level filtering and localStorage persistence
+- `utils.js` - Shared utilities (formatTime, sleep, throttle)
+
+**Data Models:**
+- `thermocouple.js` - Thermocouple class with temperature tracking and update methods
+
+**Communication:**
+- `uart-helper.js` - Serial port wrapper with buffer management and line reading
+
+**3D Visualization:**
+- Visualization3D class in `main.js` - Three.js scene management and rendering
+
+### Key Design Patterns
+
+**Event-Driven Architecture:**
+- UI events trigger async handlers
+- Serial messages routed through centralized `processLine()` method
+- State changes propagate via method calls and UI updates
+
+**Authority Pattern:**
+- MCU has authority over visual selection via TC_Probe messages
+- Web app sends commands but waits for MCU confirmation before updating visuals
+- Continuous resend loops ensure reliable command acknowledgment
+
+**Throttling and Batching:**
+- Visual updates throttled to prevent render lag from high-frequency temperature data
+- Message queue batching prevents event loop blocking
+- Logger filters high-frequency repeated messages
 
 ### Error Handling
 
@@ -489,23 +550,38 @@ The codebase follows a modular structure:
 
 ### Serial Port Not Connecting
 - Ensure MCU is powered and connected via USB
-- Check that browser supports Web Serial API
+- Check that browser supports Web Serial API (Chrome 89+, Edge 89+)
 - Try refreshing the page and reconnecting
+- Check if another application is using the port
+
+### Visual Selection Not Working
+- Verify MCU is sending `TC_Probe(<id>)` messages
+- Check browser console for incoming message logs (set log level to DEBUG)
+- Ensure calibration mode is active (pop effect disabled in measurement mode by default)
+- Try manually selecting TC via dropdown and clicking "Select Thermocouple"
+
+### Pop Effect Not Clearing
+- Pop effects automatically clear after PROBE_SILENCE_MS (default 1500ms) of no TC_Probe messages
+- Check UART_CONFIG settings in config.js if timeout seems wrong
+- Verify TC_Probe messages have stopped in browser console logs
 
 ### Buffer Overrun Errors
 - These are automatically handled by the queue system
 - If persistent, check MCU message frequency
-- Consider adjusting `MAX_QUEUE_SIZE` in code
+- Consider adjusting `MAX_QUEUE_SIZE` in main.js
+- Enable DEBUG logging to see queue statistics
 
 ### 3D Viewer Not Displaying
 - Check browser console for WebGL errors
-- Verify Three.js library loaded correctly
+- Verify Three.js library loaded correctly from CDN
 - Ensure active thermocouples have position data
+- Try hard refresh (Ctrl+Shift+R) to clear cache
 
 ### File Loading Issues
 - Verify file exists on MCU SD card
 - Check file format matches expected CSV structure
 - Ensure MCU is in correct state for file operations
+- Look for FILE_DATA messages in browser console (DEBUG log level)
 
 ---
 
