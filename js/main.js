@@ -279,6 +279,8 @@ class HeatCubeSystem {
         this.lastSentTcId = null; // Track the last TC ID sent over UART to prevent duplicates
         this.waitingForProbeId = null; // TC ID we're waiting for a probe response for
         this.probeRequestInterval = null; // Interval for repeatedly sending TC ID until probe received
+        this.connectionHealthCheckInterval = null; // Interval for checking connection health
+        this.lastDataReceivedTime = null; // Timestamp of last data received
 
         // UI Elements
         this.initUIElements();
@@ -413,55 +415,132 @@ class HeatCubeSystem {
 
     async openPort(port) {
         try {
-            await sleep(200); // Waits for 200ms to ensure the port is closed
-
-            if (this.helper && this.helper.port && this.helper.port !== port) {
-                await this.helper.close();
-            }
-
-            if (port.readable || port.writable) {
+            // Stop health check
+            this.stopConnectionHealthCheck();
+            
+            // Properly close existing connection first
+            if (this.helper) {
                 try {
-                    await port.close();
-                } catch (_) {}
-                await sleep(300);
+                    await this.helper.close();
+                } catch (err) {
+                    logger.warn("Error closing existing helper:", err);
+                }
+                this.helper = null;
             }
 
-            let retries = 3;
+            // Ensure port is closed before opening
+            try {
+                if (port.readable) {
+                    // Release any existing reader lock
+                    const reader = port.readable.getReader();
+                    try {
+                        await reader.cancel();
+                        await reader.releaseLock();
+                    } catch (_) {}
+                }
+                if (port.writable) {
+                    // Release any existing writer lock
+                    const writer = port.writable.getWriter();
+                    try {
+                        await writer.close();
+                        await writer.releaseLock();
+                    } catch (_) {}
+                }
+                // Close port if it's already open
+                await port.close();
+            } catch (err) {
+                // Port might not be open, which is fine
+                logger.debug("Port close attempt (may not have been open):", err.message);
+            }
+
+            // Wait a bit for port to fully close
+            await sleep(500);
+
+            // Open port with retries
+            let retries = 5;
+            let lastError = null;
             while (retries > 0) {
                 try {
-                    await port.open({ baudRate: 115200 }); // Opens the port with the baud rate of 115200
+                    await port.open({ baudRate: 115200 });
+                    logger.info(`Port opened successfully (${6 - retries} attempt)`);
                     break;
                 } catch (err) {
-                    retries--; // Decrements the retries counter
+                    lastError = err;
+                    retries--;
                     if (retries > 0) {
-                        await sleep(1000); // Waits for 1000ms to try again
-                    } else {
-                        throw err; // Throws the error if the retries are exhausted
+                        logger.warn(`Port open attempt failed, retrying in 1s... (${retries} attempts left)`);
+                        await sleep(1000);
                     }
                 }
             }
 
+            if (retries === 0) {
+                throw lastError || new Error("Failed to open port after multiple attempts");
+            }
+
+            // Create new helper and writer
             this.helper = new UARTHelper(port);
             this.helper.writer = port.writable.getWriter();
-            this.elements.output.textContent = "Port opened! Sending status command..."; // Displays a message to the user that the port has been opened
+            this.elements.output.textContent = "Port opened! Sending status command...";
 
-            await sleep(200);
+            // Wait a bit for port to stabilise
+            await sleep(300);
             
-            await this.helper.write("status"); // Sends the status command to the MCU to check if the connection is successful
+            // Send status command to verify connection
+            await this.helper.write("status");
 
-            this.startReaderLoop(); // Starts the reader loop to read the data from the MCU
+            // Start reader loop
+            this.startReaderLoop();
+            
+            // Start connection health monitoring
+            this.startConnectionHealthCheck();
+            
+            logger.info("Serial port connection established successfully");
         } catch (err) {
-            logger.error("Error opening port:", err.message); // Logs the error if the port fails to open
-            this.elements.output.textContent = "Error opening port: " + err.message;
-            this.helper = null; // Sets the helper to null if the port fails to open
+            logger.error("Error opening port:", err.message);
+            this.elements.output.textContent = `Error opening port: ${err.message}. Try clicking "Choose Serial Port" again.`;
+            this.helper = null;
+            
+            // Clean up on error
+            try {
+                if (port.readable) {
+                    const reader = port.readable.getReader();
+                    await reader.cancel();
+                    await reader.releaseLock();
+                }
+                if (port.writable) {
+                    const writer = port.writable.getWriter();
+                    await writer.close();
+                    await writer.releaseLock();
+                }
+                await port.close();
+            } catch (cleanupErr) {
+                logger.warn("Error during cleanup:", cleanupErr);
+            }
         }
     }
 
     async startReaderLoop() {
         if (!this.helper || !this.helper.port) return;
 
-        const textStream = this.helper.port.readable.pipeThrough(new TextDecoderStream());
-        this.helper.reader = textStream.getReader();
+        // Stop any existing reader loop
+        if (this.helper.reader) {
+            try {
+                await this.helper.reader.cancel();
+                await this.helper.reader.releaseLock();
+            } catch (err) {
+                logger.debug("Error stopping existing reader:", err);
+            }
+            this.helper.reader = null;
+        }
+
+        try {
+            const textStream = this.helper.port.readable.pipeThrough(new TextDecoderStream());
+            this.helper.reader = textStream.getReader();
+        } catch (err) {
+            logger.error("Error creating reader:", err);
+            return;
+        }
 
         let buffer = '';
         let processingQueue = [];
@@ -541,6 +620,19 @@ class HeatCubeSystem {
                         this.startReaderLoop();
                         return;
                     }
+                } else if (err.name === 'NetworkError' || err.message?.includes('device') || err.message?.includes('disconnected')) {
+                    // Connection lost - try to reconnect
+                    logger.error("Serial port connection lost:", err);
+                    this.elements.output.textContent = "Connection lost. Attempting to reconnect...";
+                    try {
+                        await sleep(1000);
+                        // Try to reconnect if we have port info
+                        await this.tryAutoConnect();
+                    } catch (reconnectErr) {
+                        logger.error("Reconnection failed:", reconnectErr);
+                        this.elements.output.textContent = "Connection lost. Please click 'Choose Serial Port' to reconnect.";
+                    }
+                    break;
                 } else {
                     logger.debug("Reader stopped:", err);
                     break;
@@ -554,8 +646,49 @@ class HeatCubeSystem {
         this.helper.reader = null;
     }
 
+    startConnectionHealthCheck() {
+        // Stop any existing health check
+        if (this.connectionHealthCheckInterval) {
+            clearInterval(this.connectionHealthCheckInterval);
+        }
+        
+        this.lastDataReceivedTime = Date.now();
+        
+        // Check connection health every 5 seconds
+        this.connectionHealthCheckInterval = setInterval(() => {
+            if (!this.helper || !this.helper.port) {
+                return;
+            }
+            
+            const timeSinceLastData = Date.now() - (this.lastDataReceivedTime || 0);
+            const HEALTH_CHECK_TIMEOUT = 10000; // 10 seconds without data = unhealthy
+            
+            if (timeSinceLastData > HEALTH_CHECK_TIMEOUT) {
+                logger.warn("Connection appears stale (no data for 10s), attempting to verify...");
+                // Try to send a status command to verify connection
+                if (this.helper && this.helper.writer) {
+                    this.helper.write("status").catch(err => {
+                        logger.error("Health check failed - connection may be lost:", err);
+                        this.elements.output.textContent = "Connection appears lost. Please reconnect.";
+                    });
+                }
+            }
+        }, 5000);
+    }
+
+    stopConnectionHealthCheck() {
+        if (this.connectionHealthCheckInterval) {
+            clearInterval(this.connectionHealthCheckInterval);
+            this.connectionHealthCheckInterval = null;
+        }
+    }
+
     processLine(line) {
         if (!line) return;
+        
+        // Update last data received time for health check
+        this.lastDataReceivedTime = Date.now();
+        
         console.log('=== Processing line: ===', line);
         // High-frequency messages that should NOT be logged (even in DEBUG mode)
         const highFrequencyPatterns = [
@@ -772,6 +905,8 @@ class HeatCubeSystem {
             }
         }
     }
+
+    
     handleTCTemperature(line) {
         const match = line.match(/TC(\d+):\s*([\d.]+)/);
         if (match) {
@@ -1382,37 +1517,57 @@ class HeatCubeSystem {
     async tryAutoConnect() {
         const lastPortInfo = JSON.parse(localStorage.getItem('lastPort') || '{}');
         if (!lastPortInfo.usbVendorId || !lastPortInfo.usbProductId) {
+            logger.debug("No previous port info found for auto-connect");
             return;
         }
 
-        try {
-            let ports = await navigator.serial.getPorts();
-            
-            if (ports.length === 0) {
-                try {
-                    const requestedPort = await navigator.serial.requestPort({
-                        filters: [
-                            { usbVendorId: lastPortInfo.usbVendorId, usbProductId: lastPortInfo.usbProductId }
-                        ]
-                    });
-                    ports = [requestedPort];
-                } catch (err) {
+        // Retry auto-connect with exponential backoff
+        const maxRetries = 3;
+        let retryCount = 0;
+        
+        while (retryCount < maxRetries) {
+            try {
+                let ports = await navigator.serial.getPorts();
+                
+                if (ports.length === 0) {
+                    // No ports available yet, wait and retry
+                    if (retryCount < maxRetries - 1) {
+                        logger.debug(`No ports available, retrying auto-connect in ${(retryCount + 1) * 1000}ms...`);
+                        await sleep((retryCount + 1) * 1000);
+                        retryCount++;
+                        continue;
+                    } else {
+                        logger.debug("No serial ports available for auto-connect");
+                        return;
+                    }
+                }
+                
+                // Find matching port
+                for (const p of ports) {
+                    const info = p.getInfo();
+                    if (info.usbVendorId === lastPortInfo.usbVendorId &&
+                        info.usbProductId === lastPortInfo.usbProductId) {
+                        this.elements.output.textContent = "Previously used port detected. Auto-connecting...";
+                        await sleep(500); // Give more time before connecting
+                        await this.openPort(p);
+                        return;
+                    }
+                }
+                
+                // Port not found in available ports
+                logger.debug("Matching port not found in available ports");
+                return;
+                
+            } catch (err) {
+                logger.warn(`Auto-connect attempt ${retryCount + 1} failed:`, err);
+                if (retryCount < maxRetries - 1) {
+                    await sleep((retryCount + 1) * 1000);
+                    retryCount++;
+                } else {
+                    logger.error("Auto-connect failed after all retries:", err);
                     return;
                 }
             }
-            
-            for (const p of ports) {
-                const info = p.getInfo();
-                if (info.usbVendorId === lastPortInfo.usbVendorId &&
-                    info.usbProductId === lastPortInfo.usbProductId) {
-                    this.elements.output.textContent = "Previously used port detected. Auto-connecting...";
-                    await sleep(200);
-                    await this.openPort(p);
-                    return;
-                }
-            }
-        } catch (err) {
-            logger.error("Auto-connect error:", err);
         }
     }
 

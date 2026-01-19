@@ -43,8 +43,35 @@ export class UARTHelper {
     }
 
     async close() {
-        if (this.writer) await this.writer.close();
-        if (this.reader) await this.reader.cancel();
-        logger.info("UART connection closed");
+        try {
+            if (this.writer) {
+                try {
+                    await this.writer.close();
+                    await this.writer.releaseLock();
+                } catch (err) {
+                    logger.debug("Error closing writer:", err);
+                }
+                this.writer = null;
+            }
+            if (this.reader) {
+                try {
+                    await this.reader.cancel();
+                    await this.reader.releaseLock();
+                } catch (err) {
+                    logger.debug("Error closing reader:", err);
+                }
+                this.reader = null;
+            }
+            if (this.port) {
+                try {
+                    await this.port.close();
+                } catch (err) {
+                    logger.debug("Error closing port:", err);
+                }
+            }
+            logger.info("UART connection closed");
+        } catch (err) {
+            logger.warn("Error during UART close:", err);
+        }
     }
 }
