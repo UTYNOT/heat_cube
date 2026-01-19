@@ -330,6 +330,7 @@ class HeatCubeSystem {
     setupEventListeners() {
         this.elements.choosePortBtn.addEventListener('click', () => this.handleChoosePort());
         this.elements.statusBtn.addEventListener('click', () => this.handleStatus());
+        // No UI wiring for reload suppression per request
         this.elements.sendSelectionBtn.addEventListener('click', () => this.handleSendSelection());
         this.elements.finishedCalibrationBtn.addEventListener('click', () => this.handleToggleCalibration());
         this.elements.selectFileBtn.addEventListener('click', () => this.handleSelectFile());
@@ -419,7 +420,7 @@ class HeatCubeSystem {
     async openPort(port) {
         try {
             // Stop health check
-            this.stopConnectionHealthCheck();
+            //this.stopConnectionHealthCheck();
             
             // Properly close existing connection first
             if (this.helper) {
@@ -492,11 +493,12 @@ class HeatCubeSystem {
             // Send status command to verify connection
             await this.helper.write("status");
 
+
             // Start reader loop
             this.startReaderLoop();
             
             // Start connection health monitoring
-            this.startConnectionHealthCheck(); // Start monitoring connection health
+            //this.startConnectionHealthCheck(); // Start monitoring connection health
             
             logger.info("Serial port connection established successfully");
         } catch (err) {
@@ -649,42 +651,42 @@ class HeatCubeSystem {
         this.helper.reader = null;
     }
 
-    startConnectionHealthCheck() {
-        // Stop any existing health check
-        if (this.connectionHealthCheckInterval) {
-            clearInterval(this.connectionHealthCheckInterval);
-        }
+    // startConnectionHealthCheck() {
+    //     // Stop any existing health check
+    //     if (this.connectionHealthCheckInterval) {
+    //         clearInterval(this.connectionHealthCheckInterval);
+    //     }
         
-        this.lastDataReceivedTime = Date.now();
+    //     this.lastDataReceivedTime = Date.now();
         
-        // Check connection health every 5 seconds
-        this.connectionHealthCheckInterval = setInterval(() => {
-            if (!this.helper || !this.helper.port) {
-                return;
-            }
+    //     // Check connection health every 5 seconds
+    //     this.connectionHealthCheckInterval = setInterval(() => {
+    //         if (!this.helper || !this.helper.port) {
+    //             return;
+    //         }
             
-            const timeSinceLastData = Date.now() - (this.lastDataReceivedTime || 0);
-            const HEALTH_CHECK_TIMEOUT = 10000; // 10 seconds without data = unhealthy
+    //         const timeSinceLastData = Date.now() - (this.lastDataReceivedTime || 0);
+    //         const HEALTH_CHECK_TIMEOUT = 10000; // 10 seconds without data = unhealthy
             
-            if (timeSinceLastData > HEALTH_CHECK_TIMEOUT) {
-                logger.warn("Connection appears stale (no data for 10s), attempting to verify...");
-                // Try to send a status command to verify connection
-                if (this.helper && this.helper.writer) {
-                    this.helper.write("status").catch(err => {
-                        logger.error("Health check failed - connection may be lost:", err);
-                        this.elements.output.textContent = "Connection appears lost. Please reconnect.";
-                    });
-                }
-            }
-        }, 5000);
-    }
+    //         if (timeSinceLastData > HEALTH_CHECK_TIMEOUT) {
+    //             logger.warn("Connection appears stale (no data for 10s), attempting to verify...");
+    //             // Try to send a status command to verify connection
+    //             if (this.helper && this.helper.writer) {
+    //                 this.helper.write("status").catch(err => {
+    //                     logger.error("Health check failed - connection may be lost:", err);
+    //                     this.elements.output.textContent = "Connection appears lost. Please reconnect.";
+    //                 });
+    //             }
+    //         }
+    //     }, 5000);
+    // }
 
-    stopConnectionHealthCheck() {
-        if (this.connectionHealthCheckInterval) {
-            clearInterval(this.connectionHealthCheckInterval);
-            this.connectionHealthCheckInterval = null;
-        }
-    }
+    // stopConnectionHealthCheck() {
+    //     if (this.connectionHealthCheckInterval) {
+    //         clearInterval(this.connectionHealthCheckInterval);
+    //         this.connectionHealthCheckInterval = null;
+    //     }
+    // }
 
     processLine(line) {
         if (!line) return;
@@ -1159,7 +1161,24 @@ class HeatCubeSystem {
     // ============ UI HANDLERS ============
     async handleStatus() {
         if (this.helper && this.helper.writer) {
+
+            await this.helper.write("RESET");
+            await sleep(1000);
+
             await this.helper.write("status");
+
+            // Also trigger the local backup endpoint (runs server.js on the backend)
+            try {
+                this.elements.output.textContent = "Status sent. Triggering SD copy...";
+                const resp = await fetch('http://localhost:3001/copy');
+                const data = await resp.json().catch(() => null);
+                const message = data?.message || `Copy trigger responded with status ${resp.status}`;
+                this.elements.output.textContent = message;
+                logger.info(message);
+            } catch (err) {
+                logger.warn('Failed to trigger SD copy backend:', err);
+                this.elements.output.textContent = "Status sent. Backup trigger failed (is backend running?)";
+            }
         }
     }
 

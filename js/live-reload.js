@@ -10,6 +10,113 @@
  */
 
 const RELOAD_CHECK_INTERVAL = 1000; // Check every 1 second
+// Explicitly ignore data files like CSV to avoid refreshes during backups
+const IGNORED_EXTENSIONS = ['.csv'];
+
+// Optional global suppression for external reload triggers (e.g., Live Server)
+// Use localStorage key 'suppressAllReloads' ("true"/"false") to control behavior at runtime
+// Default to suppression if not previously set
+try { if (localStorage.getItem('suppressAllReloads') === null) localStorage.setItem('suppressAllReloads', 'true'); } catch (_) {}
+let ORIGINAL_RELOAD = null;
+let ORIGINAL_ASSIGN = null;
+let ORIGINAL_REPLACE = null;
+let ORIGINAL_WS = null;
+let ORIGINAL_ES = null;
+function applyReloadSuppression(suppress) {
+    try {
+        if (!ORIGINAL_RELOAD && window.location.reload) {
+            ORIGINAL_RELOAD = window.location.reload.bind(window.location);
+        }
+        if (!ORIGINAL_ASSIGN && window.location.assign) {
+            ORIGINAL_ASSIGN = window.location.assign.bind(window.location);
+        }
+        if (!ORIGINAL_REPLACE && window.location.replace) {
+            ORIGINAL_REPLACE = window.location.replace.bind(window.location);
+        }
+        if (!ORIGINAL_WS && window.WebSocket) {
+            ORIGINAL_WS = window.WebSocket;
+        }
+        if (!ORIGINAL_ES && window.EventSource) {
+            ORIGINAL_ES = window.EventSource;
+        }
+        window.__ORIGINAL_RELOAD__ = ORIGINAL_RELOAD;
+        if (suppress) {
+            window.location.reload = function () {
+                console.log('[LiveReload] Suppressed external reload');
+            };
+            // Prevent navigation-based reloads commonly used by live-reload clients
+            window.location.assign = function () {
+                console.log('[LiveReload] Suppressed location.assign');
+            };
+            window.location.replace = function () {
+                console.log('[LiveReload] Suppressed location.replace');
+            };
+            // Mute Live Server/Livereload websocket and SSE clients
+            if (window.WebSocket) {
+                window.WebSocket = function () {
+                    console.log('[LiveReload] Suppressed WebSocket connection');
+                    return {
+                        close() {},
+                        addEventListener() {},
+                        removeEventListener() {},
+                        send() {},
+                        onopen: null,
+                        onmessage: null,
+                        onerror: null,
+                        onclose: null
+                    };
+                };
+            }
+            if (window.EventSource) {
+                window.EventSource = function () {
+                    console.log('[LiveReload] Suppressed EventSource connection');
+                    return {
+                        close() {},
+                        addEventListener() {},
+                        removeEventListener() {},
+                        onopen: null,
+                        onmessage: null,
+                        onerror: null
+                    };
+                };
+            }
+        } else if (ORIGINAL_RELOAD) {
+            window.location.reload = ORIGINAL_RELOAD;
+            if (ORIGINAL_ASSIGN) window.location.assign = ORIGINAL_ASSIGN;
+            if (ORIGINAL_REPLACE) window.location.replace = ORIGINAL_REPLACE;
+            if (ORIGINAL_WS) window.WebSocket = ORIGINAL_WS;
+            if (ORIGINAL_ES) window.EventSource = ORIGINAL_ES;
+        }
+    } catch (_) { /* no-op */ }
+}
+
+// Apply suppression based on saved preference on load
+try {
+    const suppress = localStorage.getItem('suppressAllReloads') === 'true';
+    applyReloadSuppression(suppress);
+    // Expose runtime toggles
+    window.enableReloadSuppression = function () {
+        localStorage.setItem('suppressAllReloads', 'true');
+        applyReloadSuppression(true);
+        console.log('[LiveReload] External reload suppression enabled');
+    };
+    window.disableReloadSuppression = function () {
+        localStorage.setItem('suppressAllReloads', 'false');
+        applyReloadSuppression(false);
+        console.log('[LiveReload] External reload suppression disabled');
+    };
+    window.toggleReloadSuppression = function () {
+        const current = localStorage.getItem('suppressAllReloads') === 'true';
+        const next = !current;
+        localStorage.setItem('suppressAllReloads', next ? 'true' : 'false');
+        applyReloadSuppression(next);
+        console.log(`[LiveReload] External reload suppression ${next ? 'enabled' : 'disabled'}`);
+        return next;
+    };
+    window.isReloadSuppressed = function () {
+        return localStorage.getItem('suppressAllReloads') === 'true';
+    };
+} catch (_) { /* no-op */ }
 const FILES_TO_WATCH = [
     'index.html',
     'style.css',
@@ -53,6 +160,11 @@ function enableLiveReload() {
 
 async function checkFilesForChanges() {
     for (const file of FILES_TO_WATCH) {
+        // Safety guard: never reload on ignored extensions (e.g., .csv)
+        const lower = file.toLowerCase();
+        if (IGNORED_EXTENSIONS.some(ext => lower.endsWith(ext))) {
+            continue;
+        }
         try {
             const url = file.startsWith('http') ? file : new URL(file, window.location.href).href;
             const response = await fetch(url, {
@@ -72,7 +184,14 @@ async function checkFilesForChanges() {
                 if (fileModified > lastKnown && lastKnown > 0) {
                     console.log(`%c[LiveReload] Changes detected in ${file} - reloading...`, 
                         'color: #0d9488; font-weight: bold;');
-                    setTimeout(() => window.location.reload(), 500);
+                    const doReload = () => {
+                        if (window.__ORIGINAL_RELOAD__) {
+                            window.__ORIGINAL_RELOAD__();
+                        } else {
+                            window.location.reload();
+                        }
+                    };
+                    setTimeout(doReload, 500);
                     return;
                 }
                 

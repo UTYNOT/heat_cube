@@ -1,4 +1,9 @@
 {
     "files.autoSave": "afterDelay",
-    "files.autoSaveDelay": 1000
+    "files.autoSaveDelay": 1000,
+    // Prevent VS Code Live Server from reloading when CSVs or backup folder files change
+    "liveServer.settings.ignoreFiles": [
+        "**/*.csv",
+        "**/TemperatureData/**"
+    ]
 }
