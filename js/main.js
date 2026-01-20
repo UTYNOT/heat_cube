@@ -401,6 +401,9 @@ class HeatCubeSystem {
         
         await sleep(500);
         await this.tryAutoConnect();
+
+        // Populate local TemperatureData files instead of requesting from MCU
+        await this.loadLocalTemperatureFiles();
     }
 
     // ============ SERIAL PORT MANAGEMENT ============
@@ -725,7 +728,8 @@ class HeatCubeSystem {
         } else if (line.startsWith("CalibrationState") || line.startsWith("MeasureState")) {
             this.handleStateChange(line);
         } else if (line.startsWith("FILES:")) {
-            this.handleFilesList(line);
+            // Ignore MCU file listing; we use local TemperatureData
+            logger.debug('Ignoring MCU FILES list; using local TemperatureData');
         } else if (line.startsWith("SOFTWARE_INIT")) {
             this.handleSoftwareInit();
         } else if (line.toUpperCase().startsWith("SOFTWARE_RESET")) {
@@ -777,24 +781,7 @@ class HeatCubeSystem {
     }
 
     handleFilesList(line) {
-        
-        const filesData = line.substring(6);
-        if (filesData && filesData !== "ERROR") {
-            const files = filesData.split(',').map(f => f.trim()).filter(f => f.length > 0);
-            this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>Select a file...</option>';
-            files.forEach(file => {
-                const option = document.createElement('option');
-                option.value = file;
-                option.textContent = file;
-                this.elements.fileDropdown.appendChild(option);
-            });
-            this.filesReceived = true;
-            this.elements.selectFileBtn.disabled = false;
-            this.elements.output.textContent = `Found ${files.length} file(s)`;
-        } else {
-            this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>No files available</option>';
-            this.elements.output.textContent = "No files found on device";
-        }
+        // No-op: we no longer use MCU file lists
     }
 
     handleSoftwareInit() {
@@ -1353,38 +1340,61 @@ class HeatCubeSystem {
     }
 
     async handleSelectFile() {
-        if (!this.helper || !this.helper.writer) {
-            this.elements.output.textContent = "Connect to the serial port before selecting a file.";
-            return;
-        }
-        
-        if (!this.filesReceived) {
-            this.elements.output.textContent = "Waiting for file list from MCU...";
-            return;
-        }
-        
         const selectedFile = this.elements.fileDropdown.value;
         if (!selectedFile) {
             this.elements.output.textContent = "Please select a file from the dropdown.";
             return;
         }
-        
-        await sleep(100);
-        
+
         if (this.fileLoadTimeout) {
             clearTimeout(this.fileLoadTimeout);
             this.fileLoadTimeout = null;
         }
-        
+
         this.fileDataArray = [];
         this.isLoadingFile = true;
         this.elements.timeSlider.value = 0;
         this.elements.timeSlider.max = 0;
         this.elements.timeSlider.disabled = true;
         this.elements.timeLabel.textContent = "Time: --:--:--";
-        
-        await this.helper.write(`FILE_SELECTED:${selectedFile}`);
-        this.elements.output.textContent = `Loading file: ${selectedFile}`;
+
+        try {
+            // Fetch CSV from local TemperatureData folder
+            const url = new URL(`../TemperatureData/${selectedFile}`, window.location.href).href;
+            const resp = await fetch(url, { cache: 'no-store' });
+            if (!resp.ok) throw new Error(`Failed to fetch ${selectedFile} (${resp.status})`);
+            const text = await resp.text();
+
+            const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+            for (const line of lines) {
+                const parts = line.split(',').map(s => s.trim());
+                if (parts.length > 1) {
+                    const time = parts[0];
+                    const temps = parts.slice(1).map(t => {
+                        const num = parseFloat(t);
+                        return isNaN(num) ? null : num;
+                    });
+                    this.fileDataArray.push({ time, temps });
+                }
+            }
+
+            // Finalise
+            this.isLoadingFile = false;
+            localStorage.setItem('fileDataArray', JSON.stringify(this.fileDataArray));
+            if (this.fileDataArray.length > 0) {
+                this.elements.timeSlider.max = this.fileDataArray.length - 1;
+                this.elements.timeSlider.value = this.fileDataArray.length - 1;
+                this.elements.timeSlider.disabled = false;
+                this.elements.timeLabel.textContent = `Time: ${formatTime(this.fileDataArray[this.fileDataArray.length - 1].time)}`;
+                this.elements.output.textContent = `Loaded ${this.fileDataArray.length} data points from ${selectedFile}`;
+            } else {
+                this.elements.output.textContent = `No data rows found in ${selectedFile}`;
+            }
+        } catch (err) {
+            this.isLoadingFile = false;
+            logger.error('Error loading local CSV:', err);
+            this.elements.output.textContent = `Error loading file: ${err.message}`;
+        }
     }
 
     async handleSavePosition() {
@@ -1428,6 +1438,34 @@ class HeatCubeSystem {
         } catch (err) {
             logger.error('Error sending positions:', err);
             this.elements.positionOutput.textContent = `Error sending positions: ${err.message}`;
+        }
+    }
+
+    async loadLocalTemperatureFiles() {
+        try {
+            this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>Loading files...</option>';
+            const resp = await fetch('http://localhost:3001/temperature-data/list');
+            const data = await resp.json();
+            const files = Array.isArray(data.files) ? data.files : [];
+            if (files.length === 0) {
+                this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>No files available</option>';
+                this.elements.selectFileBtn.disabled = true;
+                return;
+            }
+            this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>Select a file...</option>';
+            for (const file of files) {
+                const opt = document.createElement('option');
+                opt.value = file;
+                opt.textContent = file;
+                this.elements.fileDropdown.appendChild(opt);
+            }
+            this.filesReceived = true;
+            this.elements.selectFileBtn.disabled = false;
+            this.elements.output.textContent = `Found ${files.length} local file(s)`;
+        } catch (err) {
+            logger.warn('Failed to load local TemperatureData list:', err);
+            this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>No files available</option>';
+            this.elements.selectFileBtn.disabled = true;
         }
     }
 

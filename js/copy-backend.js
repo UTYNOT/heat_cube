@@ -4,6 +4,7 @@
 const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 // Adjust default SD path if needed; can also be overridden via ?sd=E:\\ style query
 const DEFAULT_SD_PATH = 'E:\\';
@@ -69,6 +70,25 @@ const server = http.createServer((req, res) => {
 
     if (req.method === 'GET' && req.url.startsWith('/copy')) {
         return handleCopy(req, res);
+    }
+
+    // List files in TemperatureData folder (CSV only)
+    if (req.method === 'GET' && req.url.startsWith('/temperature-data/list')) {
+        try {
+            const dataDir = path.join(__dirname, '..', 'TemperatureData');
+            if (!fs.existsSync(dataDir)) {
+                return sendJson(res, 404, { message: 'TemperatureData folder not found' });
+            }
+            const entries = fs.readdirSync(dataDir, { withFileTypes: true });
+            const csvRegex = /^\d{4}-\d{2}-\d{2}\.csv$/;
+            const files = entries
+                .filter(d => d.isFile() && csvRegex.test(d.name))
+                .map(d => d.name)
+                .sort();
+            return sendJson(res, 200, { files });
+        } catch (err) {
+            return sendJson(res, 500, { message: 'Error listing TemperatureData', error: String(err) });
+        }
     }
 
     sendJson(res, 404, { message: 'Not found' });
