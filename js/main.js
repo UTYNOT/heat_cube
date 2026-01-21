@@ -1162,6 +1162,9 @@ class HeatCubeSystem {
                 const message = data?.message || `Copy trigger responded with status ${resp.status}`;
                 this.elements.output.textContent = message;
                 logger.info(message);
+                
+                // Refresh the file dropdown to show newly copied files
+                await this.loadLocalTemperatureFiles();
             } catch (err) {
                 logger.warn('Failed to trigger SD copy backend:', err);
                 this.elements.output.textContent = "Status sent. Backup trigger failed (is backend running?)";
@@ -1324,6 +1327,7 @@ class HeatCubeSystem {
             return;
         }
 
+        await this.loadLocalTemperatureFiles();
         this.calibrationFinished = !this.calibrationFinished;
         localStorage.setItem('calibrationFinished', JSON.stringify(this.calibrationFinished));
 
