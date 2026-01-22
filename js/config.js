@@ -4,12 +4,19 @@
 
 export const VIZ_CONFIG = {
     tempMin: 20,
-    tempMax: 35,
+    tempMax: 60,
     coldColor: 0xAF0000,
     hotColor: 0xffff00,
     opacityMin: 0.3,
     opacityMax: 1.0,
-    cubeSize: 0.5
+    cubeSize: 0.5,
+    // Global scale factor applied to cube geometry size
+    cubeScale: 1.0,
+    // Global multiplier applied to all cube.scale() values
+    scaleFactor: 1.0,
+    // Outline appearance for cubes
+    outlineColor: 0xffffff,
+    outlineOpacity: 0.8
 };
 
 export const CalibrationConfig = {
@@ -33,7 +40,7 @@ export const UART_CONFIG = {
     // When clearing selection, consider probe "gone" if none seen for this long (ms)
     PROBE_SILENCE_MS: 1500,
     // How often to resend '0' when clearing selection (ms)
-    ZERO_RESEND_INTERVAL_MS: 400,
+    ZERO_RESEND_INTERVAL_MS: 500,
     // Safety timeout while attempting to clear selection (ms)
     ZERO_RESEND_TIMEOUT_MS: 10000
 };

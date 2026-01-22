@@ -104,14 +104,13 @@ class Visualization3D {
         const intersects = this.raycaster.intersectObjects(cubes);
 
         if (this.hoveredCube) {
-            this.hoveredCube.scale.set(1, 1, 1);
+            // Clear hover reference; visual scaling handled in updateTcVisual()
             this.hoveredCube = null;
             this.renderer.domElement.style.cursor = 'default';
         }
 
         if (intersects.length > 0) {
             this.hoveredCube = intersects[0].object;
-            this.hoveredCube.scale.set(1.15, 1.15, 1.15);
             this.renderer.domElement.style.cursor = 'pointer';
         }
     }
@@ -166,7 +165,8 @@ class Visualization3D {
     }
 
     updateTcVisual(tc, selectedTcId, isCalibrationMode = true) {
-        const cube = this.tcObjects[tc.id];
+
+        const cube = this.tcObjects[tc.id]; // Get the corresponding cube mesh
         if (!cube || !tc || !cube.material) return;
 
         const isSelected = selectedTcId === tc.id;
@@ -176,8 +176,11 @@ class Visualization3D {
         if (typeof temp !== 'number') return;
 
         const tempRange = this.config.tempMax - this.config.tempMin;
-        const t = Math.min(1, Math.max(0, (temp - this.config.tempMin) / tempRange));
+        let t = Math.min(1, Math.max(0, (temp - this.config.tempMin) / tempRange));
 
+        if(isCalibrationMode) {
+            t = Math.pow(t, 0.3);
+        }
         const coldColor = new THREE.Color(this.config.coldColor);
         const hotColor = new THREE.Color(this.config.hotColor);
         const displayColor = new THREE.Color().lerpColors(coldColor, hotColor, t);
@@ -189,16 +192,16 @@ class Visualization3D {
         
         if (isSelected && isCalibrationMode) {
             // Only scale up, pop, and brighten in calibration mode
-            cube.material.opacity = 1.0;
-            cube.scale.set(1.3, 1.3, 1.3);
+            cube.material.opacity = this.config.opacityMin + t * opacityRange;
+            cube.scale.set(3, 3, 3);
         } else if (isHovered) {
             // Preserve hover effect
-            cube.scale.set(1.15, 1.15, 1.15);
+            cube.scale.set(3, 3, 3);
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
         } else {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
-            cube.scale.set(1.0, 1.0, 1.0);
+            cube.scale.set(2.0, 2.0, 2.0);
         }
     }
 
