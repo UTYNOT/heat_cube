@@ -3,12 +3,12 @@
  */
 
 export const VIZ_CONFIG = {
-    tempMin: 20,
-    tempMax: 60,
-    coldColor: 0xAF0000,
-    hotColor: 0xffff00,
-    opacityMin: 0.3,
-    opacityMax: 1.0,
+    tempMin: 23,
+    tempMax: 30,
+    coldColor: 0x0077BE,
+    hotColor: 0xE53935,
+    opacityMin: 0.1,
+    opacityMax: 2,
     cubeSize: 0.5,
     // Global scale factor applied to cube geometry size
     cubeScale: 1.0,

@@ -178,9 +178,7 @@ class Visualization3D {
         const tempRange = this.config.tempMax - this.config.tempMin;
         let t = Math.min(1, Math.max(0, (temp - this.config.tempMin) / tempRange));
 
-        if(isCalibrationMode) {
-            t = Math.pow(t, 0.3);
-        }
+       
         const coldColor = new THREE.Color(this.config.coldColor);
         const hotColor = new THREE.Color(this.config.hotColor);
         const displayColor = new THREE.Color().lerpColors(coldColor, hotColor, t);
