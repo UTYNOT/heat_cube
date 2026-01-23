@@ -1,10 +1,11 @@
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.module.js';
 import { OrbitControls } from './OrbitControls.js';
 import { logger } from './logger.js';
-import { VIZ_CONFIG, CalibrationConfig, UART_CONFIG } from './config.js';
+import { VIZ_CONFIG, UART_CONFIG } from './config.js';
 import { formatTime, sleep, throttle } from './utils.js';
 import { Thermocouple } from './thermocouple.js';
 import { UARTHelper } from './uart-helper.js';
+import { MarchingCubes } from './marchingCubes.js';
 
 
 // ============ LOGGING SYSTEM ============
@@ -38,6 +39,12 @@ class Visualization3D {
         this.lastActiveTcsArray = [];
         this.lastSelectedTcId = null;
         this.lastCalibrationMode = true;
+        this.isoSurface = null;
+        this.isoMaterial = null;
+        this.isoLastUpdate = 0;
+        this.isoUpdateMs = 350;
+        this.cubesVisible = true; // default on; HeatCubeSystem can override from prefs
+        this.isoEnabled = false; // default off; HeatCubeSystem can override from prefs
     }
 
     init() {
@@ -60,16 +67,21 @@ class Visualization3D {
 
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
         this.controls.target.set(0, 0.5, 0);
+        this.controls.enableDamping = true;
+        this.controls.dampingFactor = 0.05;
         this.controls.update();
 
         this.restoreCameraState();
 
-        const ambient = new THREE.AmbientLight(0xffffff, 1.0);
+        // Simplified lighting setup to preserve vibrant cube colors
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
         this.scene.add(ambient);
 
-        const dir = new THREE.DirectionalLight(0xffffff, 1.0);
-        dir.position.set(5, 10, 7);
-        this.scene.add(dir);
+        // Single directional light for definition without washing out colors
+        const keyLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        keyLight.position.set(5, 10, 7);
+        keyLight.castShadow = false;
+        this.scene.add(keyLight);
 
         this.scene.add(new THREE.GridHelper(10, 10));
         this.scene.add(new THREE.AxesHelper(1.5));
@@ -94,40 +106,66 @@ class Visualization3D {
 
     onCanvasMouseMove(event) {
         if (!this.camera || !this.scene || !this.renderer) return;
+        if (!this.cubesVisible) return; // Skip hover if cubes are hidden
 
+        const prevHovered = this.hoveredCube;
         const rect = this.container.getBoundingClientRect();
         this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
         this.raycaster.setFromCamera(this.mouse, this.camera);
-        const cubes = Object.values(this.tcObjects);
-        const intersects = this.raycaster.intersectObjects(cubes);
+        const cubes = Object.values(this.tcObjects).filter(c => c.visible);
+        const intersects = this.raycaster.intersectObjects(cubes, true); // Recursive to catch children
 
-        if (this.hoveredCube) {
-            // Clear hover reference; visual scaling handled in updateTcVisual()
-            this.hoveredCube = null;
-            this.renderer.domElement.style.cursor = 'default';
-        }
+        this.hoveredCube = null;
+        this.renderer.domElement.style.cursor = 'default';
 
         if (intersects.length > 0) {
-            this.hoveredCube = intersects[0].object;
+            // Get the parent mesh if we hit an outline child
+            let target = intersects[0].object;
+            if (target.userData?.isOutline && target.parent) {
+                target = target.parent;
+            }
+            this.hoveredCube = target;
             this.renderer.domElement.style.cursor = 'pointer';
+        }
+
+        if (prevHovered !== this.hoveredCube) {
+            this.refreshHoverVisuals();
+        }
+    }
+
+    refreshHoverVisuals() {
+        for (const tc of this.lastActiveTcsArray) {
+            if (this.tcObjects[tc.id]) {
+                this.updateTcVisual(tc, this.lastSelectedTcId, this.lastCalibrationMode);
+            }
+        }
+        // Force immediate render to show hover effect without waiting for next animation frame
+        if (this.renderer && this.scene && this.camera) {
+            this.renderer.render(this.scene, this.camera);
         }
     }
 
     onCanvasClick(event) {
         if (!this.camera || !this.scene) return;
+        if (!this.cubesVisible) return; // Skip click if cubes are hidden
 
         const rect = this.container.getBoundingClientRect();
         this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
         this.raycaster.setFromCamera(this.mouse, this.camera);
-        const cubes = Object.values(this.tcObjects);
-        const intersects = this.raycaster.intersectObjects(cubes);
+        const cubes = Object.values(this.tcObjects).filter(c => c.visible);
+        const intersects = this.raycaster.intersectObjects(cubes, true); // Recursive to catch children
 
         if (intersects.length > 0) {
-            const clickedCube = intersects[0].object;
+            // Get the parent mesh if we hit an outline child
+            let clickedCube = intersects[0].object;
+            if (clickedCube.userData?.isOutline && clickedCube.parent) {
+                clickedCube = clickedCube.parent;
+            }
+            
             for (const [id, cube] of Object.entries(this.tcObjects)) {
                 if (cube === clickedCube) {
                     return parseInt(id);
@@ -155,6 +193,19 @@ class Visualization3D {
                     color: this.config.coldColor 
                 });
                 cube = new THREE.Mesh(geometry, material);
+                // Add outline so edges remain visible
+                const edgeGeom = new THREE.EdgesGeometry(geometry);
+                const outline = new THREE.LineSegments(
+                    edgeGeom,
+                    new THREE.LineBasicMaterial({
+                        color: this.config.outlineColor ?? 0xffffff,
+                        transparent: true,
+                        opacity: this.config.outlineOpacity ?? 0.8
+                    })
+                );
+                outline.userData.isOutline = true;
+                cube.add(outline);
+                cube.visible = this.cubesVisible;
                 this.scene.add(cube);
                 this.tcObjects[tc.id] = cube;
             }
@@ -178,10 +229,18 @@ class Visualization3D {
         const tempRange = this.config.tempMax - this.config.tempMin;
         let t = Math.min(1, Math.max(0, (temp - this.config.tempMin) / tempRange));
 
-       
+        // Three-color gradient: blue → yellow → red
         const coldColor = new THREE.Color(this.config.coldColor);
+        const midColor = new THREE.Color(this.config.midColor);
         const hotColor = new THREE.Color(this.config.hotColor);
-        const displayColor = new THREE.Color().lerpColors(coldColor, hotColor, t);
+        let displayColor;
+        if (t < 0.5) {
+            // Interpolate from cold to mid
+            displayColor = new THREE.Color().lerpColors(coldColor, midColor, t * 2);
+        } else {
+            // Interpolate from mid to hot
+            displayColor = new THREE.Color().lerpColors(midColor, hotColor, (t - 0.5) * 2);
+        }
 
         cube.material.color.copy(displayColor);
         cube.material.transparent = true;
@@ -200,6 +259,98 @@ class Visualization3D {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
             cube.scale.set(2.0, 2.0, 2.0);
+        }
+
+        // Keep outline opacity in sync with cube material
+        const outline = cube.children && cube.children.find(ch => ch.userData && ch.userData.isOutline);
+        if (outline && outline.material) {
+            outline.material.opacity = cube.material.opacity;
+        }
+    }
+
+    updateIsoSurface(activeTcsArray) {
+        if (!this.isoSurface) return;
+        if (!this.isoEnabled) {
+            this.isoSurface.visible = false;
+            return;
+        }
+
+        const list = Array.isArray(activeTcsArray) ? activeTcsArray : [];
+        const valid = list.filter(tc => tc && typeof tc.tcTemp === 'number');
+
+        if (valid.length === 0) {
+            this.isoSurface.visible = false;
+            this.isoSurface.reset();
+            return;
+        }
+
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+        for (const tc of valid) {
+            const px = typeof tc.x === 'number' ? tc.x : 0;
+            const py = typeof tc.y === 'number' ? tc.y : 0;
+            const pz = typeof tc.z === 'number' ? tc.z : 0;
+            if (px < minX) minX = px; if (px > maxX) maxX = px;
+            if (py < minY) minY = py; if (py > maxY) maxY = py;
+            if (pz < minZ) minZ = pz; if (pz > maxZ) maxZ = pz;
+        }
+
+        if (!Number.isFinite(minX)) {
+            minX = minY = minZ = -1;
+            maxX = maxY = maxZ = 1;
+        }
+
+        // Much larger padding to ensure metaballs at edges have room to propagate
+        const pad = 2.5;
+        const sizeX = Math.max(2.0, (maxX - minX) + 2 * pad);
+        const sizeY = Math.max(2.0, (maxY - minY) + 2 * pad);
+        const sizeZ = Math.max(2.0, (maxZ - minZ) + 2 * pad);
+
+        const originX = minX - pad;
+        const originY = minY - pad;
+        const originZ = minZ - pad;
+        const invSizeX = 1 / sizeX;
+        const invSizeY = 1 / sizeY;
+        const invSizeZ = 1 / sizeZ;
+
+        const temps = valid.map(tc => tc.tcTemp);
+        const tMin = Math.min.apply(null, temps);
+        const tMax = Math.max.apply(null, temps);
+        const tRange = Math.max(0.001, tMax - tMin);
+        const isoLevel = tMin + 0.25 * tRange; // Lower threshold for better connectivity
+
+        const subtract = this.config.isoSubtract || 2.5; // Further reduced for wider influence
+        const strengthScale = this.config.isoStrengthScale || 3.5; // Further increased for stronger fields
+
+        this.isoSurface.reset();
+        for (const tc of valid) {
+            const px = typeof tc.x === 'number' ? tc.x : 0;
+            const py = typeof tc.y === 'number' ? tc.y : 0;
+            const pz = typeof tc.z === 'number' ? tc.z : 0;
+            let nx = (px - originX) * invSizeX;
+            let ny = (py - originY) * invSizeY;
+            let nz = (pz - originZ) * invSizeZ;
+
+            // Don't clamp - with proper padding, all points should be well within [0,1]
+            // Clamping was preventing edge metaballs from propagating properly
+
+            const normalizedTemp = (tc.tcTemp - tMin) / tRange;
+            const strength = strengthScale * (normalizedTemp + 0.2); // Increased base from 0.05
+            this.isoSurface.addBall(nx, ny, nz, strength, subtract);
+        }
+
+        this.isoSurface.isolation = isoLevel;
+        this.isoSurface.visible = true;
+        const centerX = originX + sizeX / 2;
+        const centerY = originY + sizeY / 2;
+        const centerZ = originZ + sizeZ / 2;
+        this.isoSurface.position.set(centerX, centerY, centerZ);
+        this.isoSurface.scale.set(sizeX / 2, sizeY / 2, sizeZ / 2);
+        this.isoSurface.update();
+        // Recompute normals after update for smooth shading
+        if (this.isoSurface.geometry) {
+            this.isoSurface.geometry.computeVertexNormals();
         }
     }
 
@@ -245,6 +396,11 @@ class Visualization3D {
                 }
             }
         }
+
+        if (this.isoEnabled && now - this.isoLastUpdate >= this.isoUpdateMs) {
+            this.isoLastUpdate = now;
+            this.updateIsoSurface(this.lastActiveTcsArray);
+        }
         
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
@@ -255,6 +411,48 @@ class Visualization3D {
         this.lastActiveTcsArray = activeTcsArray;
         this.lastSelectedTcId = selectedTcId;
         this.lastCalibrationMode = isCalibrationMode;
+    }
+
+    setCubesVisible(visible) {
+        this.cubesVisible = visible;
+        for (const cube of Object.values(this.tcObjects)) {
+            cube.visible = visible;
+        }
+    }
+
+    setIsoVisible(enabled) {
+        this.isoEnabled = enabled;
+        if (enabled) {
+            this.ensureIsoSurface();
+            this.updateIsoSurface(this.lastActiveTcsArray);
+        } else if (this.isoSurface) {
+            this.isoSurface.visible = false;
+        }
+    }
+
+    ensureIsoSurface() {
+        if (this.isoSurface) return;
+        this.isoMaterial = new THREE.MeshStandardMaterial({
+            color: 0x00ff00,
+            opacity: this.config.isoOpacity,
+            transparent: true,
+            side: THREE.DoubleSide,
+            roughness: 0.3,
+            metalness: 0.1,
+            flatShading: false
+        });
+        // Use configurable resolution and maxPolyCount to handle complex geometry from large padding and strong fields
+        const resolution = this.config.isoResolution || 150;
+        const maxPolyCount = this.config.isoMaxPolyCount || 500000;
+        this.isoSurface = new MarchingCubes(resolution, this.isoMaterial, true, true, maxPolyCount);
+        this.isoSurface.visible = false;
+        this.isoSurface.position.set(0, 0, 0);
+        this.isoSurface.scale.set(1, 1, 1);
+        // Enable smooth shading for the geometry
+        if (this.isoSurface.geometry) {
+            this.isoSurface.geometry.computeVertexNormals();
+        }
+        this.scene.add(this.isoSurface);
     }
 }
 
@@ -268,6 +466,9 @@ class HeatCubeSystem {
         this.isLoadingFile = false;
         this.fileLoadTimeout = null;
         this.filesReceived = false;
+        this.cubesVisible = true; // default on; can be overridden by saved preference
+        this.isoEnabled = false; // default off; can be overridden by saved preference
+        this.loadVisibilityPreferences();
         
         // Calibration state
         this.referenceBaseline = null;
@@ -322,10 +523,14 @@ class HeatCubeSystem {
             fullscreenBtn: document.getElementById('fullscreen-btn'),
             viewerPanel: document.getElementById('viewer-panel'),
             tcSelectSidebar: document.getElementById('tc-select-sidebar'),
-            tcSelectBtn: document.getElementById('tc-select-btn')
+            tcSelectBtn: document.getElementById('tc-select-btn'),
+            toggleCubesBtn: document.getElementById('toggle-cubes-btn'),
+            toggleIsoBtn: document.getElementById('toggle-iso-btn')
         };
         
         this.elements.selectFileBtn.disabled = true;
+        this.updateToggleCubesLabel();
+        this.updateToggleIsoLabel();
     }
 
     setupEventListeners() {
@@ -343,6 +548,12 @@ class HeatCubeSystem {
         this.elements.exportViewerBtn.addEventListener('click', () => this.handleExportViewer());
         this.elements.recordVideoBtn.addEventListener('click', () => this.handleRecordVideo());
         this.elements.tcSelectBtn.addEventListener('click', () => this.handleTcSelectSidebar());
+        if (this.elements.toggleCubesBtn) {
+            this.elements.toggleCubesBtn.addEventListener('click', () => this.handleToggleCubes());
+        }
+        if (this.elements.toggleIsoBtn) {
+            this.elements.toggleIsoBtn.addEventListener('click', () => this.handleToggleIso());
+        }
         
         // Track if we're programmatically changing the dropdown (to prevent change event from interfering)
         this.isProgrammaticDropdownChange = false;
@@ -380,6 +591,12 @@ class HeatCubeSystem {
         this.loadFileData();
         this.loadSaveStates();
         this.viz3D.init();
+
+        // Apply saved visibility preferences after renderer is ready
+        this.viz3D.setCubesVisible(this.cubesVisible);
+        this.viz3D.setIsoVisible(this.isoEnabled);
+        this.updateToggleCubesLabel();
+        this.updateToggleIsoLabel();
         
         // Set up canvas click handler after initialisation
         if (this.viz3D.renderer) {
@@ -405,6 +622,59 @@ class HeatCubeSystem {
 
         // Populate local TemperatureData files instead of requesting from MCU
         await this.loadLocalTemperatureFiles();
+    }
+
+    handleToggleCubes() {
+        this.cubesVisible = !this.cubesVisible;
+        this.viz3D.setCubesVisible(this.cubesVisible);
+        this.updateToggleCubesLabel();
+        this.saveVisibilityPreferences();
+    }
+
+    updateToggleCubesLabel() {
+        if (this.elements?.toggleCubesBtn) {
+            this.elements.toggleCubesBtn.textContent = this.cubesVisible ? 'Hide Cubes' : 'Show Cubes';
+        }
+    }
+
+    handleToggleIso() {
+        this.isoEnabled = !this.isoEnabled;
+        this.viz3D.setIsoVisible(this.isoEnabled);
+        this.updateToggleIsoLabel();
+        this.saveVisibilityPreferences();
+    }
+
+    updateToggleIsoLabel() {
+        if (this.elements?.toggleIsoBtn) {
+            this.elements.toggleIsoBtn.textContent = this.isoEnabled ? 'Hide Iso Surface' : 'Show Iso Surface';
+        }
+    }
+
+    loadVisibilityPreferences() {
+        try {
+            const raw = localStorage.getItem('heatcube-visibility');
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (typeof parsed.cubesVisible === 'boolean') {
+                this.cubesVisible = parsed.cubesVisible;
+            }
+            if (typeof parsed.isoEnabled === 'boolean') {
+                this.isoEnabled = parsed.isoEnabled;
+            }
+        } catch (err) {
+            logger.debug('Failed to load visibility prefs:', err);
+        }
+    }
+
+    saveVisibilityPreferences() {
+        try {
+            localStorage.setItem('heatcube-visibility', JSON.stringify({
+                cubesVisible: this.cubesVisible,
+                isoEnabled: this.isoEnabled
+            }));
+        } catch (err) {
+            logger.debug('Failed to save visibility prefs:', err);
+        }
     }
 
     // ============ SERIAL PORT MANAGEMENT ============
@@ -881,29 +1151,7 @@ class HeatCubeSystem {
         }
     }
 
-    handleTCCalibrate(line) {
-        const match = line.match(/TC_CALIBRATE(\d+):\s*([\d.]+)/);
-        if (match) {
-            const tcId = parseInt(match[1]);
-            const temp = parseFloat(match[2]);
-            
-            this.currentCalibrateBatch[tcId] = temp;
-            
-            const tcObj = this.activeTcsArray.find(tc => tc.id === tcId);
-            if (tcObj) {
-                tcObj.update(temp, tcObj.refTemp);
-                // Don't call updateTcVisual here - let the render loop handle it
-            }
-            
-            const receivedTCs = Object.keys(this.currentCalibrateBatch)
-                .filter(id => parseInt(id) <= CalibrationConfig.NUM_TCS);
-            
-            if (receivedTCs.length >= CalibrationConfig.NUM_TCS) {
-                this.analyzeCalibrationData();
-                this.currentCalibrateBatch = {};
-            }
-        }
-    }
+  
 
     
     handleTCTemperature(line) {
@@ -921,7 +1169,7 @@ class HeatCubeSystem {
                 if (previousTemp !== undefined) {
                     const tempChange = Math.abs(temp - previousTemp);
                     
-                    // If temperature change is above threshold (e.g., 4°C), send TC ID over UART
+                    // If temperature change is above threshold (Uncaught TypeError: Failed to resolve module specifier "three". Relative references must start with either "/", "./", or "../".TC ID over UART
                     if (tempChange >= CalibrationConfig.THRESHOLD_MIN) {
                         if (this.helper && this.helper.writer) {
                             try {
@@ -1049,78 +1297,7 @@ class HeatCubeSystem {
         }
     }
 
-    // ============ CALIBRATION LOGIC ============
-    getMostCommonTemp(batch) {
-        const validTemps = [];
-        for (let tcId = 1; tcId <= CalibrationConfig.NUM_TCS; tcId++) {
-            const temp = batch[tcId];
-            if (temp !== undefined && temp < CalibrationConfig.VALID_TEMP_MAX) {
-                validTemps.push(temp);
-            }
-        }
-        
-        if (validTemps.length === 0) return null;
-        return validTemps.reduce((acc, temp) => acc + temp, 0) / validTemps.length;
-    }
 
-    analyzeCalibrationData() {
-        const now = Date.now();
-        
-        if (!this.referenceBaseline) {
-            this.referenceBaseline = this.getMostCommonTemp(this.currentCalibrateBatch);
-            if (this.referenceBaseline === null) return;
-            this.referenceTimestamp = now;
-            this.saveReferenceBaseline();
-            return;
-        }
-        
-        const timeSinceRef = (now - this.referenceTimestamp) / 1000;
-        const deltas = [];
-        
-        for (let tcId = 1; tcId <= CalibrationConfig.NUM_TCS; tcId++) {
-            const temp = this.currentCalibrateBatch[tcId];
-            
-            if (temp !== undefined && temp < CalibrationConfig.VALID_TEMP_MAX) {
-                const delta = temp - this.referenceBaseline;
-                
-                if (delta > 0) {
-                    const prevTemp = this.previousTcTemps[tcId];
-                    if (prevTemp !== undefined) {
-                        const tempDrop = prevTemp - temp;
-                        if (tempDrop > CalibrationConfig.TEMP_DROP_THRESHOLD) {
-                            this.previousTcTemps[tcId] = temp;
-                            continue;
-                        }
-                    }
-                    
-                    deltas.push({ tcId, delta, temp: temp.toFixed(2) });
-                    this.previousTcTemps[tcId] = temp;
-                }
-            }
-        }
-        
-        const maxChange = deltas.reduce((max, item) => 
-            item.delta > max.delta ? item : max, 
-            { tcId: 0, delta: -999 }
-        );
-        
-        if (maxChange.tcId > 0) {
-            if (maxChange.delta >= CalibrationConfig.THRESHOLD_MIN && 
-                maxChange.delta <= CalibrationConfig.THRESHOLD_MAX) {
-                // selectThermocouple is async and will send TC ID over UART if changed
-                this.selectThermocouple(maxChange.tcId).catch(err => {
-                    logger.warn(`Failed to select thermocouple ${maxChange.tcId}:`, err);
-                });
-            }
-        }
-        
-        if (timeSinceRef >= CalibrationConfig.REFERENCE_UPDATE_INTERVAL / 1000) {
-            const newBaseline = this.getMostCommonTemp(this.currentCalibrateBatch);
-            this.referenceBaseline = newBaseline;
-            this.referenceTimestamp = now;
-            this.saveReferenceBaseline();
-        }
-    }
 
     loadReferenceBaseline() {
         try {
@@ -1889,9 +2066,15 @@ class HeatCubeSystem {
             if (temp == null || isNaN(temp)) return new THREE.Color(VIZ_CONFIG.coldColor);
             const tempRange = VIZ_CONFIG.tempMax - VIZ_CONFIG.tempMin;
             const t = Math.min(1, Math.max(0, (temp - VIZ_CONFIG.tempMin) / tempRange));
+            // Three-color gradient: blue → yellow → red
             const coldColor = new THREE.Color(VIZ_CONFIG.coldColor);
+            const midColor = new THREE.Color(VIZ_CONFIG.midColor);
             const hotColor = new THREE.Color(VIZ_CONFIG.hotColor);
-            return new THREE.Color().lerpColors(coldColor, hotColor, t);
+            if (t < 0.5) {
+                return new THREE.Color().lerpColors(coldColor, midColor, t * 2);
+            } else {
+                return new THREE.Color().lerpColors(midColor, hotColor, (t - 0.5) * 2);
+            }
         }
         
         // Update TC visual

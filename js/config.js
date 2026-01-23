@@ -3,35 +3,27 @@
  */
 
 export const VIZ_CONFIG = {
-    tempMin: 23,
-    tempMax: 30,
-    coldColor: 0x0077BE,
-    hotColor: 0xE53935,
-    opacityMin: 0.1,
-    opacityMax: 2,
+    tempMin: 20,
+    tempMax: 70,
+    coldColor: 0x00AAFF,  // Bright vibrant blue
+    midColor: 0x00FF00,   // Bright green
+    hotColor: 0xFF5722,   // Bright orange-red
+    opacityMin: 0.2,
+    opacityMax: 1,
     cubeSize: 0.5,
     // Global scale factor applied to cube geometry size
-    cubeScale: 1.0,
+    cubeScale: 2.0,
     // Global multiplier applied to all cube.scale() values
     scaleFactor: 1.0,
     // Outline appearance for cubes
     outlineColor: 0xffffff,
-    outlineOpacity: 0.8
-};
-
-export const CalibrationConfig = {
-    THRESHOLD_MIN: 2.0,
-    THRESHOLD_MAX: 15.0,
-    VALID_TEMP_MAX: 2000,
-    NUM_TCS: 8,
-    REFERENCE_UPDATE_INTERVAL: 20000,
-    TEMP_DROP_THRESHOLD: 0.75,
-    // Treat very large immediate drops as noise/ignore condition (°C)
-    DROP_LARGE_THRESHOLD: 3.0,
-    // Spike detection window: compare the first sample in this window to subsequent seconds
-    SPIKE_WINDOW_SECONDS: 6,
-    // Minimum cooldown between auto-selects for the same TC (ms)
-    SPIKE_COOLDOWN_MS: 1500
+    outlineOpacity: 2,
+    // Marching cubes iso-surface settings
+    isoResolution: 150,
+    isoMaxPolyCount: 5000000,  // Maximum polygon count for marching cubes geometry buffers
+    isoSubtract: 1.8,  // Lower value creates smoother blending between metaballs
+    isoStrengthScale: 3.5,
+    isoOpacity: 0.25
 };
 
 export const UART_CONFIG = {
@@ -40,7 +32,7 @@ export const UART_CONFIG = {
     // When clearing selection, consider probe "gone" if none seen for this long (ms)
     PROBE_SILENCE_MS: 1500,
     // How often to resend '0' when clearing selection (ms)
-    ZERO_RESEND_INTERVAL_MS: 500,
+    ZERO_RESEND_INTERVAL_MS: 300,
     // Safety timeout while attempting to clear selection (ms)
-    ZERO_RESEND_TIMEOUT_MS: 10000
+    ZERO_RESEND_TIMEOUT_MS: 3000
 };
