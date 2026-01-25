@@ -17,15 +17,8 @@ export const VIZ_CONFIG = {
     scaleFactor: 1.0,
     // Outline appearance for cubes
     outlineColor: 0xffffff,
-    outlineOpacity: 2,
-    // Marching cubes iso-surface settings
-    isoResolution: 150,
-    isoMaxPolyCount: 5000000,  // Maximum polygon count for marching cubes geometry buffers
-    isoSubtract: 1.8,  // Lower value creates smoother blending between metaballs
-    isoStrengthScale: 3.5,
-    isoOpacity: 0.25
+    outlineOpacity: 2
 };
-
 export const UART_CONFIG = {
     BAUDRATE: 115200,
     TIMEOUT: 2000,  // 2 second timeout for file loading

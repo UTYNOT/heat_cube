@@ -5,7 +5,6 @@ import { VIZ_CONFIG, UART_CONFIG } from './config.js';
 import { formatTime, sleep, throttle } from './utils.js';
 import { Thermocouple } from './thermocouple.js';
 import { UARTHelper } from './uart-helper.js';
-import { MarchingCubes } from './marchingCubes.js';
 
 
 // ============ LOGGING SYSTEM ============
@@ -39,12 +38,7 @@ class Visualization3D {
         this.lastActiveTcsArray = [];
         this.lastSelectedTcId = null;
         this.lastCalibrationMode = true;
-        this.isoSurface = null;
-        this.isoMaterial = null;
-        this.isoLastUpdate = 0;
-        this.isoUpdateMs = 350;
         this.cubesVisible = true; // default on; HeatCubeSystem can override from prefs
-        this.isoEnabled = false; // default off; HeatCubeSystem can override from prefs
     }
 
     init() {
@@ -83,7 +77,7 @@ class Visualization3D {
         keyLight.castShadow = false;
         this.scene.add(keyLight);
 
-        this.scene.add(new THREE.GridHelper(10, 10));
+        this.scene.add(new THREE.GridHelper(20, 10));
         this.scene.add(new THREE.AxesHelper(1.5));
 
         this.renderer.domElement.addEventListener('click', (e) => this.onCanvasClick(e));
@@ -249,108 +243,26 @@ class Visualization3D {
         
         if (isSelected && isCalibrationMode) {
             // Only scale up, pop, and brighten in calibration mode
-            cube.material.opacity = this.config.opacityMin + t * opacityRange;
+            cube.material.opacity = 1;
+            displayColor = new THREE.Color().lerpColors(coldColor, hotColor, (t * 3) );
+            cube.material.color.copy(displayColor);
             cube.scale.set(3, 3, 3);
         } else if (isHovered) {
             // Preserve hover effect
             cube.scale.set(3, 3, 3);
-            cube.material.opacity = this.config.opacityMin + t * opacityRange;
+            cube.material.opacity = 1;
         } else {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
             cube.scale.set(2.0, 2.0, 2.0);
         }
 
+        
+
         // Keep outline opacity in sync with cube material
         const outline = cube.children && cube.children.find(ch => ch.userData && ch.userData.isOutline);
         if (outline && outline.material) {
             outline.material.opacity = cube.material.opacity;
-        }
-    }
-
-    updateIsoSurface(activeTcsArray) {
-        if (!this.isoSurface) return;
-        if (!this.isoEnabled) {
-            this.isoSurface.visible = false;
-            return;
-        }
-
-        const list = Array.isArray(activeTcsArray) ? activeTcsArray : [];
-        const valid = list.filter(tc => tc && typeof tc.tcTemp === 'number');
-
-        if (valid.length === 0) {
-            this.isoSurface.visible = false;
-            this.isoSurface.reset();
-            return;
-        }
-
-        let minX = Infinity, minY = Infinity, minZ = Infinity;
-        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
-        for (const tc of valid) {
-            const px = typeof tc.x === 'number' ? tc.x : 0;
-            const py = typeof tc.y === 'number' ? tc.y : 0;
-            const pz = typeof tc.z === 'number' ? tc.z : 0;
-            if (px < minX) minX = px; if (px > maxX) maxX = px;
-            if (py < minY) minY = py; if (py > maxY) maxY = py;
-            if (pz < minZ) minZ = pz; if (pz > maxZ) maxZ = pz;
-        }
-
-        if (!Number.isFinite(minX)) {
-            minX = minY = minZ = -1;
-            maxX = maxY = maxZ = 1;
-        }
-
-        // Much larger padding to ensure metaballs at edges have room to propagate
-        const pad = 2.5;
-        const sizeX = Math.max(2.0, (maxX - minX) + 2 * pad);
-        const sizeY = Math.max(2.0, (maxY - minY) + 2 * pad);
-        const sizeZ = Math.max(2.0, (maxZ - minZ) + 2 * pad);
-
-        const originX = minX - pad;
-        const originY = minY - pad;
-        const originZ = minZ - pad;
-        const invSizeX = 1 / sizeX;
-        const invSizeY = 1 / sizeY;
-        const invSizeZ = 1 / sizeZ;
-
-        const temps = valid.map(tc => tc.tcTemp);
-        const tMin = Math.min.apply(null, temps);
-        const tMax = Math.max.apply(null, temps);
-        const tRange = Math.max(0.001, tMax - tMin);
-        const isoLevel = tMin + 0.25 * tRange; // Lower threshold for better connectivity
-
-        const subtract = this.config.isoSubtract || 2.5; // Further reduced for wider influence
-        const strengthScale = this.config.isoStrengthScale || 3.5; // Further increased for stronger fields
-
-        this.isoSurface.reset();
-        for (const tc of valid) {
-            const px = typeof tc.x === 'number' ? tc.x : 0;
-            const py = typeof tc.y === 'number' ? tc.y : 0;
-            const pz = typeof tc.z === 'number' ? tc.z : 0;
-            let nx = (px - originX) * invSizeX;
-            let ny = (py - originY) * invSizeY;
-            let nz = (pz - originZ) * invSizeZ;
-
-            // Don't clamp - with proper padding, all points should be well within [0,1]
-            // Clamping was preventing edge metaballs from propagating properly
-
-            const normalizedTemp = (tc.tcTemp - tMin) / tRange;
-            const strength = strengthScale * (normalizedTemp + 0.2); // Increased base from 0.05
-            this.isoSurface.addBall(nx, ny, nz, strength, subtract);
-        }
-
-        this.isoSurface.isolation = isoLevel;
-        this.isoSurface.visible = true;
-        const centerX = originX + sizeX / 2;
-        const centerY = originY + sizeY / 2;
-        const centerZ = originZ + sizeZ / 2;
-        this.isoSurface.position.set(centerX, centerY, centerZ);
-        this.isoSurface.scale.set(sizeX / 2, sizeY / 2, sizeZ / 2);
-        this.isoSurface.update();
-        // Recompute normals after update for smooth shading
-        if (this.isoSurface.geometry) {
-            this.isoSurface.geometry.computeVertexNormals();
         }
     }
 
@@ -396,11 +308,6 @@ class Visualization3D {
                 }
             }
         }
-
-        if (this.isoEnabled && now - this.isoLastUpdate >= this.isoUpdateMs) {
-            this.isoLastUpdate = now;
-            this.updateIsoSurface(this.lastActiveTcsArray);
-        }
         
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
@@ -419,41 +326,6 @@ class Visualization3D {
             cube.visible = visible;
         }
     }
-
-    setIsoVisible(enabled) {
-        this.isoEnabled = enabled;
-        if (enabled) {
-            this.ensureIsoSurface();
-            this.updateIsoSurface(this.lastActiveTcsArray);
-        } else if (this.isoSurface) {
-            this.isoSurface.visible = false;
-        }
-    }
-
-    ensureIsoSurface() {
-        if (this.isoSurface) return;
-        this.isoMaterial = new THREE.MeshStandardMaterial({
-            color: 0x00ff00,
-            opacity: this.config.isoOpacity,
-            transparent: true,
-            side: THREE.DoubleSide,
-            roughness: 0.3,
-            metalness: 0.1,
-            flatShading: false
-        });
-        // Use configurable resolution and maxPolyCount to handle complex geometry from large padding and strong fields
-        const resolution = this.config.isoResolution || 150;
-        const maxPolyCount = this.config.isoMaxPolyCount || 500000;
-        this.isoSurface = new MarchingCubes(resolution, this.isoMaterial, true, true, maxPolyCount);
-        this.isoSurface.visible = false;
-        this.isoSurface.position.set(0, 0, 0);
-        this.isoSurface.scale.set(1, 1, 1);
-        // Enable smooth shading for the geometry
-        if (this.isoSurface.geometry) {
-            this.isoSurface.geometry.computeVertexNormals();
-        }
-        this.scene.add(this.isoSurface);
-    }
 }
 
 // ============ SYSTEM CLASS (Main Application) ============
@@ -467,7 +339,6 @@ class HeatCubeSystem {
         this.fileLoadTimeout = null;
         this.filesReceived = false;
         this.cubesVisible = true; // default on; can be overridden by saved preference
-        this.isoEnabled = false; // default off; can be overridden by saved preference
         this.loadVisibilityPreferences();
         
         // Calibration state
@@ -524,13 +395,11 @@ class HeatCubeSystem {
             viewerPanel: document.getElementById('viewer-panel'),
             tcSelectSidebar: document.getElementById('tc-select-sidebar'),
             tcSelectBtn: document.getElementById('tc-select-btn'),
-            toggleCubesBtn: document.getElementById('toggle-cubes-btn'),
-            toggleIsoBtn: document.getElementById('toggle-iso-btn')
+            toggleCubesBtn: document.getElementById('toggle-cubes-btn')
         };
         
         this.elements.selectFileBtn.disabled = true;
         this.updateToggleCubesLabel();
-        this.updateToggleIsoLabel();
     }
 
     setupEventListeners() {
@@ -551,36 +420,30 @@ class HeatCubeSystem {
         if (this.elements.toggleCubesBtn) {
             this.elements.toggleCubesBtn.addEventListener('click', () => this.handleToggleCubes());
         }
-        if (this.elements.toggleIsoBtn) {
-            this.elements.toggleIsoBtn.addEventListener('click', () => this.handleToggleIso());
-        }
         
         // Track if we're programmatically changing the dropdown (to prevent change event from interfering)
         this.isProgrammaticDropdownChange = false;
         
-        // Dropdown change event - only update UI, don't send over UART (button click sends it)
+        // Dropdown change event - UI only; sending is triggered by explicit action (button or cube click)
         this.elements.selector.addEventListener('change', (e) => {
             // Skip if this is a programmatic change from cube click
             if (this.isProgrammaticDropdownChange) {
                 this.isProgrammaticDropdownChange = false;
                 return;
             }
-            
             const tcId = parseInt(e.target.value);
-            if (!isNaN(tcId)) {
-                this.userSelectedTc = true;
-                // Update UI elements only - don't send over UART
-                this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
-                
-                const tc = this.activeTcsArray.find(t => t.id === tcId);
-                if (tc) {
-                    this.elements.posXInput.value = tc.x || 0;
-                    this.elements.posYInput.value = tc.y || 0;
-                    this.elements.posZInput.value = tc.z || 0;
-                }
-                
-                this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
+            if (isNaN(tcId)) return;
+
+            this.userSelectedTc = true;
+            // Update UI display and inputs; do not send over UART here
+            this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
+            const tc = this.activeTcsArray.find(t => t.id === tcId);
+            if (tc) {
+                this.elements.posXInput.value = tc.x || 0;
+                this.elements.posYInput.value = tc.y || 0;
+                this.elements.posZInput.value = tc.z || 0;
             }
+            this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
         });
         
         // Canvas click handler will be set up after viz3D is initialised
@@ -594,22 +457,23 @@ class HeatCubeSystem {
 
         // Apply saved visibility preferences after renderer is ready
         this.viz3D.setCubesVisible(this.cubesVisible);
-        this.viz3D.setIsoVisible(this.isoEnabled);
         this.updateToggleCubesLabel();
-        this.updateToggleIsoLabel();
         
         // Set up canvas click handler after initialisation
         if (this.viz3D.renderer) {
             this.viz3D.renderer.domElement.addEventListener('click', async (e) => {
                 const tcId = this.viz3D.onCanvasClick(e);
+                                console.log('=== CUBE CLICKED - tcId:', tcId);
                 if (tcId) {
                     // Mark as programmatic change to prevent dropdown change event from interfering
                     this.isProgrammaticDropdownChange = true;
                     // Set dropdown to reflect clicked cube
                     this.elements.selector.value = tcId;
+                                        console.log('=== Set dropdown to:', tcId);
                     this.userSelectedTc = true;
                     // Update display, visuals, and send to MCU (selectThermocouple handles UART send)
                     // Use the actual clicked tcId, not the dropdown value
+                                        console.log('=== Calling selectThermocouple from cube click with:', tcId);
                     await this.selectThermocouple(tcId, true);
                 }
             });
@@ -637,19 +501,6 @@ class HeatCubeSystem {
         }
     }
 
-    handleToggleIso() {
-        this.isoEnabled = !this.isoEnabled;
-        this.viz3D.setIsoVisible(this.isoEnabled);
-        this.updateToggleIsoLabel();
-        this.saveVisibilityPreferences();
-    }
-
-    updateToggleIsoLabel() {
-        if (this.elements?.toggleIsoBtn) {
-            this.elements.toggleIsoBtn.textContent = this.isoEnabled ? 'Hide Iso Surface' : 'Show Iso Surface';
-        }
-    }
-
     loadVisibilityPreferences() {
         try {
             const raw = localStorage.getItem('heatcube-visibility');
@@ -657,9 +508,6 @@ class HeatCubeSystem {
             const parsed = JSON.parse(raw);
             if (typeof parsed.cubesVisible === 'boolean') {
                 this.cubesVisible = parsed.cubesVisible;
-            }
-            if (typeof parsed.isoEnabled === 'boolean') {
-                this.isoEnabled = parsed.isoEnabled;
             }
         } catch (err) {
             logger.debug('Failed to load visibility prefs:', err);
@@ -669,8 +517,7 @@ class HeatCubeSystem {
     saveVisibilityPreferences() {
         try {
             localStorage.setItem('heatcube-visibility', JSON.stringify({
-                cubesVisible: this.cubesVisible,
-                isoEnabled: this.isoEnabled
+                cubesVisible: this.cubesVisible
             }));
         } catch (err) {
             logger.debug('Failed to save visibility prefs:', err);
@@ -1052,7 +899,8 @@ class HeatCubeSystem {
     }
 
     handleFilesList(line) {
-        // No-op: we no longer use MCU file lists
+        // No-op: we no longer use MCU file lists instead we are copying local TemperatureData files from SD card
+        
     }
 
     handleSoftwareInit() {
@@ -1106,16 +954,23 @@ class HeatCubeSystem {
             const probeTemp = parseFloat(probeMatch[2]);
             const refTemp = parseFloat(probeMatch[3]);
 
+            if (this.waitingForProbeId != null) {
+                console.log('=== Received TC_Probe for TC:', tcId, 'Waiting for:', this.waitingForProbeId);
+            } else {
+                //Can add console log here if needed
+            }
+
             // Stop sending if we received the probe we were waiting for
             if (this.waitingForProbeId === tcId) {
                 this.stopProbeRequest();
                 logger.debug(`Received TC_Probe${tcId} - stopping repeated send`);
+                console.log('=== Stopped probe request for TC:', tcId);
             }
 
-            // Reset timeout when TC_Probe is received - keep sending '0' as long as TC_Probe keeps coming
+            // When in position-ack mode, extend the timeout while TC_Probe keeps arriving
             if (this.waitingForPositionAck) {
                 this.resetPositionAckTimeout();
-                logger.debug(`Received TC_Probe${tcId} - resetting position ack timeout`);
+                logger.debug(`Received TC_Probe${tcId} while sending position ack`);
             }
 
             const tc = this.activeTcsArray.find(t => t.id === tcId);
@@ -1151,9 +1006,6 @@ class HeatCubeSystem {
         }
     }
 
-  
-
-    
     handleTCTemperature(line) {
         const match = line.match(/TC(\d+):\s*([\d.]+)/);
         if (match) {
@@ -1365,11 +1217,13 @@ class HeatCubeSystem {
 
     stopProbeRequest() {
         // Stop repeatedly sending TC ID when probe is received
+        console.log('=== stopProbeRequest called, clearing interval:', this.probeRequestInterval);
         if (this.probeRequestInterval) {
             clearInterval(this.probeRequestInterval);
             this.probeRequestInterval = null;
         }
         this.waitingForProbeId = null;
+        console.log('=== stopProbeRequest complete');
     }
 
     stopPositionAck() {
@@ -1387,16 +1241,14 @@ class HeatCubeSystem {
     }
 
     resetPositionAckTimeout() {
-        // Reset the timeout - TC_Probe was received, so keep sending '0'
+        // Reset/extend timeout as long as TC_Probe keeps arriving
         if (this.positionAckTimeoutId) {
             clearTimeout(this.positionAckTimeoutId);
         }
-        
-        // Set timeout to stop sending if no TC_Probe received for 2 seconds
         this.positionAckTimeoutId = setTimeout(() => {
             logger.debug('No TC_Probe received for 2s - stopping position ack');
             this.stopPositionAck();
-        }, 2000); // Stop if no TC_Probe for 2 seconds
+        }, 2000);
     }
 
     startPositionAck() {
@@ -1415,11 +1267,10 @@ class HeatCubeSystem {
             logger.warn('Failed to send position ack (0) over UART:', err);
         });
         logger.debug('Sent position ack: 0');
-        
-        // Start timeout - will stop if no TC_Probe received
+        // Start timeout; if no TC_Probe arrives within window, stop
         this.resetPositionAckTimeout();
         
-        // Set up interval to send repeatedly every 2000ms while TC_Probe keeps coming
+        // Set up interval to send repeatedly every 2000ms while waiting
         this.positionAckInterval = setInterval(() => {
             if (this.helper && this.helper.writer && this.waitingForPositionAck) {
                 this.helper.write('0').catch(err => {
@@ -1434,38 +1285,64 @@ class HeatCubeSystem {
     }
 
     startProbeRequest(tcId) {
-        // Stop any existing probe request
-        this.stopProbeRequest();
+        console.log('=== startProbeRequest called with tcId:', tcId, 'Current waitingForProbeId:', this.waitingForProbeId);
+        console.log('=== Current probeRequestInterval before stop:', this.probeRequestInterval);
+        
+        // CRITICAL: Stop any existing probe request and position ack FIRST
+        // Multiple calls to clearInterval with the same ID is safe
+        if (this.probeRequestInterval !== null) {
+            console.log('=== Clearing existing interval:', this.probeRequestInterval);
+            clearInterval(this.probeRequestInterval);
+            this.probeRequestInterval = null;
+        }
+        this.waitingForProbeId = null;
+        
+        // Also stop position ack
+        this.stopPositionAck();
+        
+        console.log('=== After clearing, probeRequestInterval:', this.probeRequestInterval);
         
         if (!this.helper || !this.helper.writer) {
+            console.log('=== No helper or writer available');
             return;
         }
         
-        // Set the TC ID we're waiting for
+        // Set the TC ID we're waiting for AFTER clearing old state
         this.waitingForProbeId = tcId;
+        console.log('=== Set waitingForProbeId to:', this.waitingForProbeId);
         
         // Send immediately
+        console.log('=== Sending TC ID immediately:', String(tcId));
         this.helper.write(String(tcId)).catch(err => {
             logger.warn(`Failed to send TC ${tcId} over UART:`, err);
         });
         this.lastSentTcId = tcId;
         
-        // Set up interval to send repeatedly every 500ms until probe received
+        // Set up NEW interval to send repeatedly every 500ms until probe received
+        console.log('=== Creating NEW interval for TC:', tcId);
         this.probeRequestInterval = setInterval(() => {
-            if (this.helper && this.helper.writer && this.waitingForProbeId === tcId) {
-                this.helper.write(String(tcId)).catch(err => {
-                    logger.warn(`Failed to send TC ${tcId} over UART:`, err);
+            // Use this.waitingForProbeId instead of captured tcId to ensure we use current value
+            const currentWaitingId = this.waitingForProbeId;
+            console.log('=== Interval tick - currentWaitingId:', currentWaitingId, 'Original tcId:', tcId);
+            
+            if (this.helper && this.helper.writer && currentWaitingId !== null) {
+                console.log('=== Interval: Sending TC:', currentWaitingId);
+                this.helper.write(String(currentWaitingId)).catch(err => {
+                    logger.warn(`Failed to send TC ${currentWaitingId} over UART:`, err);
                 });
-                logger.debug(`Repeatedly sending TC selection: ${tcId}`);
+                logger.debug(`Repeatedly sending TC selection: ${currentWaitingId}`);
             } else {
                 // Stop if connection lost or TC changed
+                console.log('=== Stopping interval - no waiting ID');
                 this.stopProbeRequest();
             }
         }, 500); // Send every 500ms
+        console.log('=== New interval created with ID:', this.probeRequestInterval);
     }
 
     async selectThermocouple(tcId, forceSend = false) {
         // Updates the "Selected TC:" display and sends TC ID over UART if changed
+        console.log('=== selectThermocouple called with tcId:', tcId, 'forceSend:', forceSend);
         this.elements.selectedTc.textContent = `Selected TC: ${tcId}`;
         
         const tc = this.activeTcsArray.find(t => t.id === tcId);
@@ -1479,6 +1356,7 @@ class HeatCubeSystem {
         
         // If forceSend is true, start repeatedly sending until probe received
         if (forceSend && this.helper && this.helper.writer) {
+            console.log('=== Calling startProbeRequest with tcId:', tcId);
             this.startProbeRequest(tcId);
         } else {
             // Send TC ID over UART if it changed and we have a connection (one-time send)
@@ -1691,7 +1569,8 @@ class HeatCubeSystem {
             this.elements.positionOutput.textContent = "Thermocouple not found.";
         }
 
-        // Send '0' repeatedly over UART until TC_Probe is received
+        // Stop probe request (continuous TC number sending) and start position ack instead
+        this.stopProbeRequest();
         this.startPositionAck();
     }
 
