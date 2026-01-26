@@ -67,15 +67,28 @@ class Visualization3D {
 
         this.restoreCameraState();
 
-        // Simplified lighting setup to preserve vibrant cube colors
-        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+       // ======= Lighting =======
+       // Low ambient so back faces remain dark
+        const ambient = new THREE.AmbientLight(0xffffff, 0.02);
         this.scene.add(ambient);
 
-        // Single directional light for definition without washing out colors
-        const keyLight = new THREE.DirectionalLight(0xffffff, 0.5);
-        keyLight.position.set(5, 10, 7);
-        keyLight.castShadow = false;
-        this.scene.add(keyLight);
+        // Directional light
+        this.keyLight = new THREE.DirectionalLight(0xffffff, 1);
+        this.keyLight.position.set(5, 5, 5); // initial position
+        this.scene.add(this.keyLight);
+
+        // The target tells the light where to shine
+        this.keyLightTarget = new THREE.Object3D();
+        this.keyLightTarget.position.set(0, 0, 0); // center of cubes
+        this.scene.add(this.keyLightTarget);
+        this.keyLight.target = this.keyLightTarget;
+
+        // Optional helper
+        //const dirHelper = new THREE.DirectionalLightHelper(this.keyLight, 2, 0xff0000);
+        //this.scene.add(dirHelper);
+
+
+
 
         this.scene.add(new THREE.GridHelper(20, 10));
         this.scene.add(new THREE.AxesHelper(1.5));
@@ -183,9 +196,16 @@ class Visualization3D {
                     this.config.cubeSize, 
                     this.config.cubeSize
                 );
-                const material = new THREE.MeshBasicMaterial({ 
-                    color: this.config.coldColor 
+                const material = new THREE.MeshLambertMaterial({
+                    color: this.config.coldColor,
+                    flatShading: true,   // ensures each face reacts independently
+                    transparent: true,
+                    opacity: 0.7,
+                    emissive:  new THREE.Color(this.config.coldColor),
+                    emissiveIntensity: 0.7
                 });
+
+                
                 cube = new THREE.Mesh(geometry, material);
                 // Add outline so edges remain visible
                 const edgeGeom = new THREE.EdgesGeometry(geometry);
@@ -237,6 +257,7 @@ class Visualization3D {
         }
 
         cube.material.color.copy(displayColor);
+        cube.material.emissive.copy(displayColor);
         cube.material.transparent = true;
 
         const opacityRange = this.config.opacityMax - this.config.opacityMin;
@@ -297,22 +318,34 @@ class Visualization3D {
         requestAnimationFrame(() => this.animate());
         if (this.controls) this.controls.update();
         
-        // Throttle visual updates to prevent lag from high-frequency temp data
+        // Throttle visual updates
         const now = Date.now();
         if (now - this.lastMeshSyncTime >= this.MESH_SYNC_THROTTLE_MS) {
             this.lastMeshSyncTime = now;
-            // Update all TC visuals in a batch once per throttle interval
             for (const tc of this.lastActiveTcsArray) {
                 if (this.tcObjects[tc.id]) {
                     this.updateTcVisual(tc, this.lastSelectedTcId, this.lastCalibrationMode);
                 }
             }
         }
-        
+        // Make directional light follow camera
+         // ======= Make the light follow the camera =======
+        // ===== Make directional light follow camera =====
+        if (this.keyLight && this.camera) {
+            // Move the light to the camera position
+            this.keyLight.position.copy(this.camera.position);
+
+            // Keep it pointing at the center of the scene (or wherever cubes are)
+            this.keyLight.target.position.set(0, 0, 0);
+            this.keyLight.target.updateMatrixWorld();
+        }
+
+        // Render
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
         }
     }
+
     
     updateActiveTcsCached(activeTcsArray, selectedTcId, isCalibrationMode) {
         this.lastActiveTcsArray = activeTcsArray;
@@ -352,9 +385,9 @@ class HeatCubeSystem {
         this.lastSentTcId = null; // Track the last TC ID sent over UART to prevent duplicates
         this.waitingForProbeId = null; // TC ID we're waiting for a probe response for
         this.probeRequestInterval = null; // Interval for repeatedly sending TC ID until probe received
-        this.waitingForPositionAck = false; // Track if we're waiting for position ack (TC_Probe after Set Position)
-        this.positionAckInterval = null; // Interval for repeatedly sending '0' until TC_Probe received
-        this.positionAckTimeoutId = null; // Timeout ID for stopping position ack when TC_Probe stops
+        this.waitingForPositionAck = false; // Track if we're waiting for position ack (Probe_Data after Set Position)
+        this.positionAckInterval = null; // Interval for repeatedly sending '0' until Probe_Data received
+        this.positionAckTimeoutId = null; // Timeout ID for stopping position ack when Probe_Data stops
         this.connectionHealthCheckInterval = null; // Interval for checking connection health
         this.lastDataReceivedTime = null; // Timestamp of last data received
 
@@ -820,7 +853,7 @@ class HeatCubeSystem {
         const highFrequencyPatterns = [
             "FILE_DATA:",
             "TC_CALIBRATE",
-            "TC_Probe",
+            "Probe_Data",
             /^TC\d+:/,  // TC1:, TC2:, etc.
         ];
 
@@ -854,7 +887,7 @@ class HeatCubeSystem {
             this.handleSoftwareReset();
         } else if (line.startsWith("FILE_DATA:")) {
             this.handleFileData(line);
-        } else if (line.startsWith("TC_Probe")) {
+        } else if (line.startsWith("Probe_Data")) {
             this.handleTCProbe(line);
         } else if (line.startsWith("TC") && line.includes(":")) {
             this.handleTCTemperature(line);
@@ -947,7 +980,7 @@ class HeatCubeSystem {
     }
 
     handleTCProbe(line) {
-        const probeMatch = line.match(/TC_Probe(\d+),\s*Ref\s+Data:\s*([\d.]+),([\d.]+)/);
+        const probeMatch = line.match(/Probe_Data(\d+),\s*Ref\s+Data:\s*([\d.]+),([\d.]+)/);
         
         if (probeMatch) {
             const tcId = parseInt(probeMatch[1]);
@@ -955,7 +988,7 @@ class HeatCubeSystem {
             const refTemp = parseFloat(probeMatch[3]);
 
             if (this.waitingForProbeId != null) {
-                console.log('=== Received TC_Probe for TC:', tcId, 'Waiting for:', this.waitingForProbeId);
+                console.log('=== Received Probe_Data for TC:', tcId, 'Waiting for:', this.waitingForProbeId);
             } else {
                 //Can add console log here if needed
             }
@@ -963,14 +996,14 @@ class HeatCubeSystem {
             // Stop sending if we received the probe we were waiting for
             if (this.waitingForProbeId === tcId) {
                 this.stopProbeRequest();
-                logger.debug(`Received TC_Probe${tcId} - stopping repeated send`);
+                logger.debug(`Received Probe_Data${tcId} - stopping repeated send`);
                 console.log('=== Stopped probe request for TC:', tcId);
             }
 
-            // When in position-ack mode, extend the timeout while TC_Probe keeps arriving
+            // When in position-ack mode, extend the timeout while Probe_Data keeps arriving
             if (this.waitingForPositionAck) {
                 this.resetPositionAckTimeout();
-                logger.debug(`Received TC_Probe${tcId} while sending position ack`);
+                logger.debug(`Received Probe_Data  ${tcId} while sending position ack`);
             }
 
             const tc = this.activeTcsArray.find(t => t.id === tcId);
@@ -1227,7 +1260,7 @@ class HeatCubeSystem {
     }
 
     stopPositionAck() {
-        // Stop repeatedly sending '0' when TC_Probe stops coming
+        // Stop repeatedly sending '0' when Probe_Data stops coming
         if (this.positionAckInterval) {
             clearInterval(this.positionAckInterval);
             this.positionAckInterval = null;
@@ -1237,16 +1270,16 @@ class HeatCubeSystem {
             this.positionAckTimeoutId = null;
         }
         this.waitingForPositionAck = false;
-        logger.debug('Stopped position ack - no TC_Probe received');
+        logger.debug('Stopped position ack - no Probe_Data received');
     }
 
     resetPositionAckTimeout() {
-        // Reset/extend timeout as long as TC_Probe keeps arriving
+        // Reset/extend timeout as long as Probe_Data keeps arriving
         if (this.positionAckTimeoutId) {
             clearTimeout(this.positionAckTimeoutId);
         }
         this.positionAckTimeoutId = setTimeout(() => {
-            logger.debug('No TC_Probe received for 2s - stopping position ack');
+            logger.debug('No Probe_Data received for 2s - stopping position ack');
             this.stopPositionAck();
         }, 2000);
     }
@@ -1267,7 +1300,7 @@ class HeatCubeSystem {
             logger.warn('Failed to send position ack (0) over UART:', err);
         });
         logger.debug('Sent position ack: 0');
-        // Start timeout; if no TC_Probe arrives within window, stop
+        // Start timeout; if no Probe_Data arrives within window, stop
         this.resetPositionAckTimeout();
         
         // Set up interval to send repeatedly every 2000ms while waiting

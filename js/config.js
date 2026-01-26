@@ -4,11 +4,11 @@
 
 export const VIZ_CONFIG = {
     tempMin: 20,
-    tempMax: 70,
+    tempMax: 30,
     coldColor: 0x00AAFF,  // Bright vibrant blue
     midColor: 0x00FF00,   // Bright green
     hotColor: 0xFF5722,   // Bright orange-red
-    opacityMin: 0.2,
+    opacityMin: 0.3,
     opacityMax: 1,
     cubeSize: 0.5,
     // Global scale factor applied to cube geometry size
