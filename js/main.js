@@ -69,11 +69,11 @@ class Visualization3D {
 
        // ======= Lighting =======
        // Low ambient so back faces remain dark
-        const ambient = new THREE.AmbientLight(0xffffff, 0.02);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.01);
         this.scene.add(ambient);
 
         // Directional light
-        this.keyLight = new THREE.DirectionalLight(0xffffff, 1);
+        this.keyLight = new THREE.DirectionalLight(0xffffff, 0.8);
         this.keyLight.position.set(5, 5, 5); // initial position
         this.scene.add(this.keyLight);
 
@@ -223,6 +223,7 @@ class Visualization3D {
                 this.scene.add(cube);
                 this.tcObjects[tc.id] = cube;
             }
+            cube.renderOrder = 1; // Ensure cubes render above grid
 
             cube.position.set(tc.x || 0, tc.y || 0, tc.z || 0);
             this.updateTcVisual(tc, selectedTcId, isCalibrationMode);
@@ -257,6 +258,8 @@ class Visualization3D {
         }
 
         cube.material.color.copy(displayColor);
+
+
         cube.material.emissive.copy(displayColor);
         cube.material.transparent = true;
 
@@ -264,14 +267,14 @@ class Visualization3D {
         
         if (isSelected && isCalibrationMode) {
             // Only scale up, pop, and brighten in calibration mode
-            cube.material.opacity = 1;
+            cube.material.opacity = 0.8;
             displayColor = new THREE.Color().lerpColors(coldColor, hotColor, (t * 3) );
             cube.material.color.copy(displayColor);
             cube.scale.set(3, 3, 3);
         } else if (isHovered) {
             // Preserve hover effect
             cube.scale.set(3, 3, 3);
-            cube.material.opacity = 1;
+            cube.material.opacity = this.config.opacityMin + t * opacityRange;
         } else {
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
@@ -1388,7 +1391,7 @@ class HeatCubeSystem {
         this.viz3D.syncTcMeshes(this.activeTcsArray, tcId, !this.calibrationFinished);
         
         // If forceSend is true, start repeatedly sending until probe received
-        if (forceSend && this.helper && this.helper.writer) {
+        if (forceSend && this.helper && this.helper.writer && !this.calibrationFinished) {
             console.log('=== Calling startProbeRequest with tcId:', tcId);
             this.startProbeRequest(tcId);
         } else {
@@ -1424,6 +1427,7 @@ class HeatCubeSystem {
             await this.helper.write("measure");
             this.elements.finishedCalibrationBtn.textContent = "Enter Calibration Mode";
         } else {
+            console.log('=== Sending calibrate command to MCU');
             await this.helper.write("calibrate");
             this.elements.finishedCalibrationBtn.textContent = "Finish Calibration";
         }
