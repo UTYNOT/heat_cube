@@ -2408,7 +2408,6 @@ class HeatCubeSystem {
                     tc.tcTemp = temp;
                 }
             });
-            
             this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
             await new Promise(resolve => requestAnimationFrame(resolve));
             await sleep(33);
