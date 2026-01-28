@@ -39,6 +39,8 @@ class Visualization3D {
         this.lastSelectedTcId = null;
         this.lastCalibrationMode = true;
         this.cubesVisible = true; // default on; HeatCubeSystem can override from prefs
+        this.playInterval = null;
+        this.isPlaying = false;
     }
 
     init() {
@@ -89,9 +91,13 @@ class Visualization3D {
 
 
 
-
-        this.scene.add(new THREE.GridHelper(20, 10));
-        this.scene.add(new THREE.AxesHelper(1.5));
+        // Grid and Axes helpers
+        const grid = new THREE.GridHelper(20, 10);
+        grid.position.set(7.5,0, 7.5)
+        this.scene.add(grid);
+        const axes = new THREE.AxesHelper(1.5);
+        axes.position.set(7.5,0,7.5)
+        this.scene.add(axes);
 
         this.renderer.domElement.addEventListener('click', (e) => this.onCanvasClick(e));
         this.renderer.domElement.addEventListener('mousemove', (e) => this.onCanvasMouseMove(e));
@@ -100,6 +106,7 @@ class Visualization3D {
         this.controls.addEventListener('change', () => this.saveCameraState());
         window.addEventListener('resize', () => this.onWindowResize());
 
+        console.log("init")
         this.animate();
     }
 
@@ -264,18 +271,19 @@ class Visualization3D {
         cube.material.transparent = true;
 
         const opacityRange = this.config.opacityMax - this.config.opacityMin;
-        
+
         if (isSelected && isCalibrationMode) {
+            //console.log("Effect for selected cube in calibration mode");
             // Only scale up, pop, and brighten in calibration mode
-            cube.material.opacity = 0.8;
-            displayColor = new THREE.Color().lerpColors(coldColor, hotColor, (t * 3) );
-            cube.material.color.copy(displayColor);
-            cube.scale.set(3, 3, 3);
+            cube.material.opacity = this.config.opacityMin + t * opacityRange;
+
+            cube.scale.set(2, 2, 2);
         } else if (isHovered) {
             // Preserve hover effect
             cube.scale.set(3, 3, 3);
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
         } else {
+            //console.log(tc.id, '=== Updating visual for temp:', temp);
             // In measurement mode or not selected, use normal scale and opacity based on temp only
             cube.material.opacity = this.config.opacityMin + t * opacityRange;
             cube.scale.set(2.0, 2.0, 2.0);
@@ -327,7 +335,7 @@ class Visualization3D {
             this.lastMeshSyncTime = now;
             for (const tc of this.lastActiveTcsArray) {
                 if (this.tcObjects[tc.id]) {
-                    this.updateTcVisual(tc, this.lastSelectedTcId, this.lastCalibrationMode);
+                    this.updateTcVisual(tc, this.lastSelectedTcId, this.lastCalibrationMode); //Line throwing the error of not all thermocouples being reset to normal
                 }
             }
         }
@@ -431,11 +439,16 @@ class HeatCubeSystem {
             viewerPanel: document.getElementById('viewer-panel'),
             tcSelectSidebar: document.getElementById('tc-select-sidebar'),
             tcSelectBtn: document.getElementById('tc-select-btn'),
-            toggleCubesBtn: document.getElementById('toggle-cubes-btn')
+            toggleCubesBtn: document.getElementById('toggle-cubes-btn'),
+
+            prevTimeBtn: document.getElementById('prevTimeBtn'),
+            nextTimeBtn: document.getElementById('nextTimeBtn'),
+            playPauseBtn: document.getElementById('playPauseBtn')
         };
         
         this.elements.selectFileBtn.disabled = true;
         this.updateToggleCubesLabel();
+        this.setupTimeButtons();
     }
 
     setupEventListeners() {
@@ -453,6 +466,9 @@ class HeatCubeSystem {
         this.elements.exportViewerBtn.addEventListener('click', () => this.handleExportViewer());
         this.elements.recordVideoBtn.addEventListener('click', () => this.handleRecordVideo());
         this.elements.tcSelectBtn.addEventListener('click', () => this.handleTcSelectSidebar());
+        this.elements.prevTimeBtn.addEventListener('click', () => this.decrementTime());
+        this.elements.nextTimeBtn.addEventListener('click', () => this.incrementTime());
+        this.elements.playPauseBtn.addEventListener('click', () => this.setupPlayPauseButton());
         if (this.elements.toggleCubesBtn) {
             this.elements.toggleCubesBtn.addEventListener('click', () => this.handleToggleCubes());
         }
@@ -1249,6 +1265,7 @@ class HeatCubeSystem {
         this.userSelectedTc = true;
         await this.selectThermocouple(selectedId, true);
         this.elements.output.textContent = `Sent TC ${selectedId}`;
+
     }
 
     stopProbeRequest() {
@@ -1544,6 +1561,7 @@ class HeatCubeSystem {
             const resp = await fetch('http://localhost:3001/temperature-data/list');
             const data = await resp.json();
             const files = Array.isArray(data.files) ? data.files : [];
+            console.log('=== Local TemperatureData files:', files);
             if (files.length === 0) {
                 this.elements.fileDropdown.innerHTML = '<option value="" disabled selected>No files available</option>';
                 this.elements.selectFileBtn.disabled = true;
@@ -1581,6 +1599,9 @@ class HeatCubeSystem {
             this.elements.output.textContent = "Connect to the serial port before setting position.";
             return;
         }
+        console.log('=== handleSetPosition called');
+        this.isIdle = false  
+        console.log('=== isIdle set to false');
 
         const x = parseFloat(this.elements.posXInput.value) || 0;
         const y = parseFloat(this.elements.posYInput.value) || 0;
@@ -1606,9 +1627,11 @@ class HeatCubeSystem {
             this.elements.positionOutput.textContent = "Thermocouple not found.";
         }
 
+       
         // Stop probe request (continuous TC number sending) and start position ack instead
         this.stopProbeRequest();
         this.startPositionAck();
+
     }
 
     handleTimeSlider() {
@@ -1633,6 +1656,66 @@ class HeatCubeSystem {
             }
         }
     }
+
+    setupPlayPauseButton() {
+     
+        if (!this.isPlaying) {
+            // Start playing
+            this.isPlaying = true;
+            this.elements.playPauseBtn.textContent = '⏸️ Pause';
+            this.incrementTime(); // first immediate increment
+            this.playInterval = setInterval(() => this.incrementTime(), 200); // repeat every 200ms
+        } else {
+            // Pause
+            this.isPlaying = false;
+            this.elements.playPauseBtn.textContent = '▶️ Play';
+            clearInterval(this.playInterval);
+            this.playInterval = null; // reset
+        }
+    
+    }
+
+    // inside your class or initialization code
+    setupTimeButtons() {
+        let repeatTimer;
+
+        // NEXT BUTTON
+        this.elements.nextTimeBtn.addEventListener('mousedown', () => {
+            this.incrementTime(); // first immediate increment
+            repeatTimer = setInterval(() => this.incrementTime(), 150); // repeat every 150ms
+        });
+
+        this.elements.nextTimeBtn.addEventListener('mouseup', () => clearInterval(repeatTimer));
+        this.elements.nextTimeBtn.addEventListener('mouseleave', () => clearInterval(repeatTimer)); // stop if mouse leaves button
+
+        // PREV BUTTON
+        this.elements.prevTimeBtn.addEventListener('mousedown', () => {
+            this.decrementTime(); // first immediate decrement
+            repeatTimer = setInterval(() => this.decrementTime(), 150);
+        });
+
+        this.elements.prevTimeBtn.addEventListener('mouseup', () => clearInterval(repeatTimer));
+        this.elements.prevTimeBtn.addEventListener('mouseleave', () => clearInterval(repeatTimer));
+    }
+
+    incrementTime() {
+    if (!this.fileDataArray || this.fileDataArray.length === 0) return;
+
+    let index = parseInt(this.elements.timeSlider.value);
+    index = Math.min(index + 1, this.fileDataArray.length - 1); // clamp to max
+    this.elements.timeSlider.value = index;
+    this.handleTimeSlider(); // update cubes and label
+}
+
+    decrementTime() {
+        if (!this.fileDataArray || this.fileDataArray.length === 0) return;
+
+        let index = parseInt(this.elements.timeSlider.value);
+        index = Math.max(index - 1, 0); // clamp to min
+        this.elements.timeSlider.value = index;
+        this.handleTimeSlider(); // update cubes and label
+    }
+
 
     handleFullscreen() {
         if (!this.elements.viewerPanel) return;
@@ -1916,6 +1999,13 @@ class HeatCubeSystem {
             <div class="panel-header"><h3>Viewer Controls</h3></div>
             <div class="panel-section">
                 <label for="timeSlider">Timeline</label>
+
+                 <div class="time-controls">
+                    <button id="prevTimeBtn">◀ Previous</button>
+                    <button id="nextTimeBtn">Next ▶</button>
+                    <button id="playPauseBtn">Play ▶</button>
+                </div>
+
                 <input type="range" id="timeSlider" min="0" max="0" value="0">
                 <div class="time-display" id="timeDisplay">Time: --:--:--</div>
             </div>
@@ -1971,8 +2061,12 @@ class HeatCubeSystem {
         dir.position.set(5, 10, 7);
         scene.add(dir);
         
-        scene.add(new THREE.GridHelper(10, 10));
-        scene.add(new THREE.AxesHelper(1.5));
+        const grid = new THREE.GridHelper(10, 10);
+        grid.position.set(7.5, 0, 7.5);
+        scene.add(grid);
+        const axes = new THREE.AxesHelper(1.5);
+        axes.position.set(7.5, 0, 7.5);
+        scene.add(axes);
         
         const tcObjects = {};
         let hoveredCube = null;
@@ -2014,7 +2108,7 @@ class HeatCubeSystem {
             const opacityRange = VIZ_CONFIG.opacityMax - VIZ_CONFIG.opacityMin;
             
             if (isSelected) {
-                cube.material.opacity = 1.0;
+                cube.material.opacity = VIZ_CONFIG.opacityMin + t * opacityRange;
                 cube.scale.set(1.3, 1.3, 1.3);
             } else if (isHovered) {
                 cube.scale.set(1.15, 1.15, 1.15);
@@ -2104,10 +2198,60 @@ class HeatCubeSystem {
             renderer.render(scene, camera);
         }
         animate();
+
+
         
         // Controls wiring
         const timeSliderEl = document.getElementById('timeSlider');
         const timeDisplayEl = document.getElementById('timeDisplay');
+        const playPauseBtnEl = document.getElementById('playPauseBtn');
+        const prevTimeBtnEl = document.getElementById('prevTimeBtn');
+        const nextTimeBtnEl = document.getElementById('nextTimeBtn');
+        let isPlaying = false;
+        let playInterval = null;
+        playPauseBtnEl.addEventListener('click', () => {
+            if (!isPlaying) {
+                isPlaying = true;
+                playPauseBtnEl.textContent = '⏸️ Pause';
+                incrementTime();   
+                playInterval = setInterval(() => incrementTime(), 200);
+            }
+            else {
+                isPlaying = false;
+                playPauseBtnEl.textContent = '▶️ Play';  
+                clearInterval(playInterval);
+                playInterval = null;
+            }
+        });
+        prevTimeBtnEl.addEventListener('mousedown', () => {
+            decrementTime(); 
+            const repeatTimer = setInterval(() => decrementTime(), 150); 
+            prevTimeBtnEl.addEventListener('mouseup', () => clearInterval(repeatTimer), { once: true });
+            prevTimeBtnEl.addEventListener('mouseleave', () => clearInterval(repeatTimer), { once: true });
+        }); 
+        nextTimeBtnEl.addEventListener('mousedown', () => {
+            incrementTime(); 
+            const repeatTimer = setInterval(() => incrementTime(), 150); 
+            nextTimeBtnEl.addEventListener('mouseup', () => clearInterval(repeatTimer), { once: true });
+            nextTimeBtnEl.addEventListener('mouseleave', () => clearInterval(repeatTimer), { once: true });
+        }
+        ); 
+        function incrementTime() {
+            currentIndex = Math.min(currentIndex + 1, fileData.length - 1);
+            timeSliderEl.value = currentIndex;
+            updateTimeDisplay();
+            applyTempsForIndex(currentIndex);
+            updateTcInfo(selectedTcId);
+        }
+
+        function decrementTime() {
+            currentIndex = Math.max(currentIndex - 1, 0);
+            timeSliderEl.value = currentIndex;
+            updateTimeDisplay();
+            applyTempsForIndex(currentIndex);
+            updateTcInfo(selectedTcId);
+        }
+
         if (fileData.length > 0) {
             timeSliderEl.max = Math.max(0, fileData.length - 1);
             timeSliderEl.value = currentIndex;
@@ -2224,8 +2368,8 @@ class HeatCubeSystem {
         if (this.fileDataArray.length === 0) {
             this.elements.output.textContent = "No file data loaded. Please select a file first.";
             return;
-        }
-        
+        }    
+
         this.elements.recordVideoBtn.disabled = true;
         this.elements.recordVideoBtn.textContent = "⏺️ Recording...";
         

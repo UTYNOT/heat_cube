@@ -80,7 +80,7 @@ const server = http.createServer((req, res) => {
                 return sendJson(res, 404, { message: 'TemperatureData folder not found' });
             }
             const entries = fs.readdirSync(dataDir, { withFileTypes: true });
-            const csvRegex = /^\d{4}-\d{2}-\d{2}\.csv$/;
+            const csvRegex = /^\d{4}-\d{2}-\d{2}(_\d{2}-\d{2})?\.csv$/;
             const files = entries
                 .filter(d => d.isFile() && csvRegex.test(d.name))
                 .map(d => d.name)

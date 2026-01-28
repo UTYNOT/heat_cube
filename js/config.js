@@ -3,8 +3,8 @@
  */
 
 export const VIZ_CONFIG = {
-    tempMin: 20,
-    tempMax: 30,
+    tempMin: 23,
+    tempMax: 33,
     coldColor: 0x00AAFF,  // Bright vibrant blue
     midColor: 0x00FF00,   // Bright green
     hotColor: 0xFF2222,   // Bright orange-red

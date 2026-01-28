@@ -123,7 +123,15 @@
                         <div class="tc-sidebar-header">
                             <h3>Viewer Controls</h3>
                         </div>
-                        
+
+                        <div class="time-controls">
+                            <button id="prevTimeBtn">◀ Previous</button>
+                            <button id="nextTimeBtn">Next ▶</button>
+                            <button id="playPauseBtn">Play ▶</button>
+                            <span id="timeLabel">Time: --:--:--</span>
+                        </div>
+
+
                         <!-- Time Slider Section -->
                         <div class="tc-sidebar-section">
                             <label for="time-slider">Timeline</label>
@@ -162,7 +170,6 @@
             (function() {
                 // Remember last visited page
                 try { localStorage.setItem('lastPage', 'index'); } catch (_) {}
-
                 // Restore overlay state: remove overlay if previously dismissed
                 try {
                     var overlayDismissed = localStorage.getItem('overlayDismissed') === 'true';
@@ -174,7 +181,6 @@
                         }
                     }
                 } catch (_) {}
-
                 var btn = document.getElementById('enter-visualizer');
                 if (btn) {
                     btn.addEventListener('click', function () {

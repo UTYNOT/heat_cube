@@ -14,30 +14,46 @@ async function ensureDir(dirPath) {
 }
 
 function isTargetFile(fileName) {
-    // Match files like 2026-01-13.csv
-    return /^\d{4}-\d{2}-\d{2}\.csv$/i.test(fileName);
+    // Match files like 2026-01-13.csv or 2026-01-13_12-34.csv
+    return /^\d{4}-\d{2}-\d{2}(_\d{2}-\d{2})?\.csv$/i.test(fileName);
 }
 
 async function copyRecursive(src, dest) {
-    const stats = await fs.promises.stat(src);
+    let stats;
+    try {
+        stats = await fs.promises.stat(src);
+    } catch (e) {
+        console.warn(`Skipping unreadable: ${src}`);
+        return;
+    }
 
     if (stats.isDirectory()) {
-        const entries = await fs.promises.readdir(src);
+        let entries;
+        try {
+            entries = await fs.promises.readdir(src);
+        } catch (e) {
+            console.warn(`Cannot read directory: ${src}`);
+            return;
+        }
+
         for (const entry of entries) {
-            await copyRecursive(path.join(src, entry), path.join(dest, entry));
+            await copyRecursive(
+                path.join(src, entry),
+                path.join(dest, entry)
+            );
         }
     } else if (stats.isFile()) {
-        if (!isTargetFile(path.basename(src))) {
-            return; // Skip non-matching files
-        }
+        if (!isTargetFile(path.basename(src))) return;
         await ensureDir(path.dirname(dest));
         await fs.promises.copyFile(src, dest);
         console.log(`Copied ${src} -> ${dest}`);
     }
 }
 
+
 async function main() {
     try {
+        await new Promise(r => setTimeout(r, 3000));
         if (!fs.existsSync(sdCardPath)) {
             console.error('Source path not found:', sdCardPath);
             process.exit(1);
