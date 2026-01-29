@@ -1664,7 +1664,7 @@ class HeatCubeSystem {
             this.isPlaying = true;
             this.elements.playPauseBtn.textContent = '⏸️ Pause';
             this.incrementTime(); // first immediate increment
-            this.playInterval = setInterval(() => this.incrementTime(), 200); // repeat every 200ms
+            this.playInterval = setInterval(() => this.incrementTime(), 100); // repeat every 200ms
         } else {
             // Pause
             this.isPlaying = false;
