@@ -1014,6 +1014,7 @@ class HeatCubeSystem {
 
             // Stop sending if we received the probe we were waiting for
             if (this.waitingForProbeId === tcId) {
+                
                 this.stopProbeRequest();
                 logger.debug(`Received Probe_Data${tcId} - stopping repeated send`);
                 console.log('=== Stopped probe request for TC:', tcId);
@@ -1033,9 +1034,9 @@ class HeatCubeSystem {
                 // Don't touch the dropdown - let user control it independently
                 
                 // Always update position inputs for the probe TC
-                this.elements.posXInput.value = tc.x || 0;
-                this.elements.posYInput.value = tc.y || 0;
-                this.elements.posZInput.value = tc.z || 0;
+                // this.elements.posXInput.value = tc.x || 0;
+                // this.elements.posYInput.value = tc.y || 0;
+                // this.elements.posZInput.value = tc.z || 0;
                 this.viz3D.syncTcMeshes(this.activeTcsArray, this.getSelectedTcId(), !this.calibrationFinished);
                 
                 // Display formatted probe data in Live Data section (compact layout)
