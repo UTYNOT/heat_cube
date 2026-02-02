@@ -1,94 +1,208 @@
 # Heat Cube Visualiser
 
-An interactive 3D web application for real-time thermocouple temperature visualisation and calibration, designed to communicate with a microcontroller unit (MCU) over Web Serial API.
+A web-based 3D thermocouple temperature monitoring and calibration system that connects to a microcontroller via Web Serial API for real-time temperature visualization.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Features](#features)
+- [Getting Started](#getting-started)
+- [Usage Guide](#usage-guide)
 - [Project Structure](#project-structure)
 - [Architecture](#architecture)
-- [Main Components](#main-components)
-- [Usage](#usage)
 - [Configuration](#configuration)
-- [Technical Details](#technical-details)
-- [File Format](#file-format)
+- [Serial Protocol](#serial-protocol)
+- [File Formats](#file-formats)
+- [Troubleshooting](#troubleshooting)
+- [Browser Compatibility](#browser-compatibility)
 
 ## Overview
 
-Heat Cube Visualiser is a web-based application that connects to a microcontroller unit (MCU) via serial communication to monitor and visualize temperature data from up to 256 thermocouples in real-time. The application provides:
+Heat Cube Visualiser is an interactive web application for monitoring and calibrating thermocouple arrays. It provides real-time 3D visualization of temperature data from up to 256 thermocouples connected to a microcontroller.
 
-- **3D Visualisation**: Interactive Three.js-based 3D rendering of thermocouple positions with temperature-based colour coding
-- **Real-time Monitoring**: Live temperature data streaming from the MCU
-- **Calibration System**: Automated thermocouple detection and calibration based on temperature changes
-- **Data Playback**: Load and replay historical temperature data from CSV files
-- **Export Capabilities**: Generate standalone HTML viewers and record video timelines
+### Key Capabilities
+
+- **3D Visualization**: Interactive Three.js rendering with temperature-based color coding
+- **Real-time Monitoring**: Live temperature streaming via Web Serial API
+- **Calibration Mode**: Automated thermocouple detection and position mapping
+- **Data Playback**: Load and replay historical CSV temperature data
+- **Export Tools**: Generate standalone HTML viewers and record timeline videos
 
 ## Features
 
 ### 🔌 Serial Communication
 - Web Serial API integration for direct MCU communication
-- Auto-connect to previously used serial ports
+- Auto-reconnect to previously used serial ports
 - Robust buffer management with overflow protection
-- Queue-based message processing to prevent data loss
+- Queue-based message processing
 
-### 🌡️ Real-time Temperature Monitoring
+### 🌡️ Real-time Monitoring
 - Live temperature readings from all active thermocouples
-- Individual thermocouple selection and detailed data display
-- Colour-coded visualisation based on temperature (red = cold, yellow = hot)
-- Visual highlighting of selected thermocouples in 3D space
+- Temperature-based color coding (cold = blue, hot = red)
+- Interactive thermocouple selection with detailed data display
+- Visual highlighting of selected thermocouples
 
 ### 📍 Position Management
 - 3D coordinate system (X, Y, Z in millimeters)
 - Manual position input for each thermocouple
 - Save/load positions to/from CSV files on MCU
-- Automatic position synchronization between web app and MCU
+- Automatic position synchronization
 
 ### ⚙️ Calibration System
 - Automatic detection of active thermocouples
-- TC_Probe message-driven visual selection (MCU controls which TC lights up)
-- Configurable thresholds for temperature monitoring
+- MCU-controlled visual selection via `TC_Probe` messages
+- Configurable temperature thresholds
 - Baseline reference temperature tracking
-- Automatic spike detection (currently disabled - can be re-enabled in code)
 
 ### 📊 Data Playback
 - Load historical temperature data from MCU CSV files
-- Timeline slider for navigating through recorded data
-- Playback visualisation with colour-coded temperature changes
-- Support for date-based CSV file naming (`YYYY-MM-DD.csv`)
+- Timeline slider for navigating recorded data
+- Date-based CSV file naming (`YYYY-MM-DD.csv`)
+- Playback visualization with color-coded temperature changes
 
 ### 📦 Export Features
-- **Standalone HTML Viewer**: Export a self-contained HTML file with embedded data for sharing or offline viewing
+- **Standalone HTML Viewer**: Self-contained HTML file with embedded data
 - **Video Recording**: Record animated temperature timeline as WebM video
-- Exported viewers include interactive 3D scene with timeline controls and TC selection
+- Interactive 3D scene with timeline controls
 
-### 🎨 3D Visualisation
+### 🎨 3D Visualization
 - Three.js-powered interactive 3D scene
 - OrbitControls for camera manipulation (rotate, pan, zoom)
 - Grid and axes helpers for spatial reference
-- Temperature-based colour interpolation
-- Opacity variation based on temperature
-- Visual "pop" effect for selected thermocouples (controlled by TC_Probe messages from MCU)
-- Proportional color boost during selection animation
+- Temperature-based color interpolation with opacity variation
+- Visual "pop" effect for selected thermocouples
+
+## Getting Started
+
+### Prerequisites
+
+- Modern web browser with Web Serial API support (Chrome 89+, Edge 89+)
+- Microcontroller with thermocouple array connected via USB
+
+### Installation
+
+1. Clone or download this repository
+2. Open `index.html` in a modern web browser
+3. No build process or dependencies to install—runs directly in browser
+
+### First Time Setup
+
+1. **Open the Application**
+   - Open `index.html` in Chrome or Edge
+   - Click "Enter Visualiser" on the landing page
+
+2. **Connect to MCU**
+   - Click "Choose Serial Port"
+   - Select your MCU's serial port from the dialog
+   - Wait for "SOFTWARE_INIT" confirmation message
+
+3. **Check Status**
+   - Click "Check Status" to view MCU state and active thermocouples
+   - Active TCs will populate the thermocouple dropdown
+
+## Usage Guide
+
+### Calibration Workflow
+
+The calibration process maps physical thermocouple positions in 3D space:
+
+1. **Automatic Detection**
+   - MCU automatically detects active thermocouples on startup
+   - Active TCs appear in the dropdown menu
+
+2. **Select Thermocouple**
+   - Choose a TC from the dropdown
+   - Click "Select Thermocouple" to send selection to MCU
+   - MCU confirms with `TC_Probe` message, triggering visual highlight
+
+3. **Set Position**
+   - Enter X, Y, Z coordinates in millimeters
+   - Click "Set Position" to update the selected TC
+   - Position updates appear immediately in 3D viewer
+
+4. **Save Positions**
+   - Click "Save Positions To CSV" to store all positions to MCU
+   - Positions saved to `position.csv` on MCU's SD card
+
+5. **Load Positions**
+   - Click "Upload Positions from CSV" to retrieve saved positions
+   - Positions loaded from MCU and stored in browser local storage
+
+### Measurement Mode
+
+Switch to live temperature monitoring:
+
+1. **Enable Measurement**
+   - Click "Finish Calibration" to switch MCU to measurement mode
+   - MCU streams continuous `TC: temperature` messages
+   - All thermocouples measured in sequence
+
+2. **Live Visualization**
+   - 3D cubes update colors in real-time based on temperature
+   - Temperature data displays in "Live Data" section
+   - Click "Enter Calibration" to return to calibration mode
+
+### Data Playback
+
+Review historical temperature data:
+
+1. **Load File**
+   - Click "Check Status" to refresh available files
+   - Select a CSV file from dropdown (format: `YYYY-MM-DD.csv`)
+   - Click "Select File" to load data from MCU
+
+2. **Navigate Timeline**
+   - Use timeline slider to scrub through data
+   - Time display shows current timestamp
+   - 3D visualization updates to show temperatures at selected time
+
+3. **Select Thermocouple**
+   - Use sidebar TC selector to view detailed data
+   - Selected TC highlighted in 3D viewer
+
+### Export Features
+
+1. **Export Standalone Viewer**
+   - Load a file first
+   - Click "📦 Export Viewer"
+   - Self-contained HTML file downloads
+   - Open in any browser for offline viewing
+
+2. **Record Video**
+   - Load a file first
+   - Click "🎬 Record Video"
+   - Timeline animation recorded to WebM format
 
 ## Project Structure
 
 ```
 heat_cube/
-├── index.html              # Main HTML file with landing page and UI structure
+├── index.html              # Main HTML file with UI structure
 ├── style.css              # Stylesheet for UI components
-├── README.md              # This file
-├── position.csv           # Empty placeholder for position data
+├── README.md              # Documentation (this file)
+│
 ├── js/
-│   ├── main.js           # Main application logic
+│   ├── main.js           # Main application logic and HeatCubeSystem class
 │   ├── config.js         # Configuration settings (visualization, calibration, UART)
 │   ├── logger.js         # Logging system with configurable levels
 │   ├── utils.js          # Utility functions (formatTime, sleep, throttle)
 │   ├── uart-helper.js    # Serial communication wrapper
 │   ├── thermocouple.js   # Thermocouple data model
 │   ├── animation.js      # Logo animation handling
+│   ├── server.js         # Node.js script for backing up SD card data
 │   ├── OrbitControls.js  # Three.js orbit controls extension
-│   └── three.module.js   # Three.js library (bundled)
+│   └── three.module.js   # Three.js library (v0.159.0)
+│
+├── TemperatureData/      # CSV files backed up from MCU
+│   └── *.csv             # Temperature data files (YYYY-MM-DD.csv format)
+│
+├── V28/                  # MCU-side code (MicroPython)
+│   ├── main.py           # MCU main entry point
+│   ├── thermocouple.py   # MAX31855 driver
+│   ├── shift_register.py # 74HC595 shift register driver
+│   └── *.py              # Additional MCU support files
+│
+└── Reports/              # (Empty) Reports folder
 ```
 
 ## Architecture
@@ -138,88 +252,84 @@ The application follows a modular, class-based architecture similar to the MCU-s
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Main Components
+### Core Components
 
-### HeatCubeSystem Class
+#### HeatCubeSystem Class
 
-The main application manager that orchestrates all functionality:
+Main application manager orchestrating all functionality.
 
-**Key Responsibilities:**
-- Initialises UI elements and event listeners
-- Manages serial port connection via `UARTHelper`
-- Processes incoming MCU messages
-- Handles calibration logic and state
-- Manages file data loading and playback
-- Coordinates UI updates with 3D visualisation
+**Responsibilities:**
+- Initialize UI elements and event listeners
+- Manage serial port connection via UARTHelper
+- Process incoming MCU messages
+- Handle calibration logic and state
+- Manage file data loading and playback
+- Coordinate UI updates with 3D visualization
 
 **Key Methods:**
-- `init()`: Initialise the application
-- `openPort()`: Connect to serial port
-- `startReaderLoop()`: Background message reading with queue processing
-- `processLine()`: Parse and route MCU messages to handlers
-- `handleTCTemperature()`: Update TC data from measurement messages
-- `handleTCCalibrate()`: Process calibration data
-- `generateStandaloneHTML()`: Create exportable viewer HTML
-- `handleExportViewer()`: Export standalone HTML file
-- `handleRecordVideo()`: Record temperature timeline as video
+- `init()` - Initialize the application
+- `openPort()` - Connect to serial port
+- `startReaderLoop()` - Background message reading with queue processing
+- `processLine()` - Parse and route MCU messages
+- `handleTCTemperature()` - Update TC data from measurements
+- `generateStandaloneHTML()` - Create exportable viewer HTML
+- `handleRecordVideo()` - Record temperature timeline as video
 
-### Visualization3D Class
+#### Visualization3D Class
 
-Manages the Three.js 3D scene and rendering:
+Manages Three.js 3D scene and rendering.
 
-**Key Responsibilities:**
-- Initialise Three.js scene, camera, renderer
+**Responsibilities:**
+- Initialize Three.js scene, camera, renderer
 - Create and manage thermocouple cube meshes
 - Update cube colors based on temperature
 - Handle camera controls (OrbitControls)
 - Save/restore camera state
 
 **Key Methods:**
-- `init()`: Set up Three.js scene
-- `syncTcMeshes()`: Create/update TC cubes from data array
-- `updateTcVisual()`: Update individual TC cube appearance
-- `saveCameraState()`: Store camera position/orientation
-- `restoreCameraState()`: Restore saved camera state
-- `animate()`: Render loop
+- `init()` - Set up Three.js scene
+- `syncTcMeshes()` - Create/update TC cubes from data array
+- `updateTcVisual()` - Update individual TC cube appearance
+- `animate()` - Render loop
 
-### UARTHelper Class
+#### UARTHelper Class
 
-Handles serial port communication:
+Handles serial port communication.
 
-**Key Responsibilities:**
+**Responsibilities:**
 - Open/close serial port connections
 - Read and write messages
 - Buffer management for incomplete messages
 
 **Key Methods:**
-- `write(message)`: Send message to MCU
-- `readLine()`: Read complete line from serial port
-- `close()`: Clean up connections
+- `write(message)` - Send message to MCU
+- `readLine()` - Read complete line from serial port
+- `close()` - Clean up connections
 
-### Logger Class
+#### Logger Class
 
-Configurable logging system to reduce console spam:
+Configurable logging system with message filtering.
 
 **Log Levels:**
-- `DEBUG`: All messages (very verbose)
-- `INFO`: Informational messages
-- `WARN`: Warnings and errors (default)
-- `ERROR`: Only errors
+- `DEBUG` - All messages (verbose)
+- `INFO` - Informational messages
+- `WARN` - Warnings and errors (default)
+- `ERROR` - Only errors
 
 **Features:**
-- Filters high-frequency messages (`TC_CALIBRATE`, `TC:`, `FILE_DATA:`)
+- Filters high-frequency messages (TC_CALIBRATE, TC:, FILE_DATA:)
 - Persists log level in localStorage
-- Exposes `window.setLogLevel()` for runtime changes
+- Runtime control via `window.setLogLevel()`
 
-### Thermocouple Class
+#### Thermocouple Class
 
-Data model for individual thermocouples:
+Data model for individual thermocouples.
 
 **Properties:**
-- `id`: Thermocouple ID (1-256)
-- `tcTemp`: Probe temperature (°C)
-- `refTemp`: Reference/junction temperature (°C)
-- `x`, `y`, `z`: 3D position coordinates (mm)
+- `id` - Thermocouple ID (1-256)
+- `tcTemp` - Probe temperature (°C)
+- `refTemp` - Reference/junction temperature (°C)
+- `x`, `y`, `z` - 3D position coordinates (mm)
 
 ## Usage
 
@@ -314,50 +424,43 @@ Data model for individual thermocouples:
 
 ## Configuration
 
-### Configuration Settings
+### Visualization Settings
 
-Located in `js/config.js`:
+Edit `js/config.js` to customize visualization parameters:
 
-**Visualization Settings:**
 ```javascript
 export const VIZ_CONFIG = {
-    tempMin: 20,           // Minimum temperature for colour scale (°C)
-    tempMax: 35,           // Maximum temperature for colour scale (°C)
-    coldColor: 0xAF0000,   // Colour for cold temperatures (dark red)
-    hotColor: 0xffff00,    // Colour for hot temperatures (yellow)
-    opacityMin: 0.3,       // Minimum cube opacity
-    opacityMax: 1.0,       // Maximum cube opacity
-    cubeSize: 0.5          // Size of TC cubes in 3D space
+    tempMin: 20,           // Minimum temperature for color scale (°C)
+    tempMax: 35,           // Maximum temperature for color scale (°C)
+    coldColor: 0x00AAFF,   // Color for cold temperatures (blue)
+    midColor: 0x00FF00,    // Color for mid temperatures (green)
+    hotColor: 0xFF2222,    // Color for hot temperatures (red)
+    opacityMin: 0.5,       // Minimum cube opacity
+    opacityMax: 0.85,      // Maximum cube opacity
+    cubeSize: 0.5,         // Size of TC cubes in 3D space
+    cubeScale: 2.0,        // Scale factor for cube geometry
+    scaleFactor: 1.0,      // Global multiplier for cube.scale()
+    outlineColor: 0xffffff,// Outline color
+    outlineOpacity: 2      // Outline opacity
 };
 ```
 
-**Calibration Settings:**
-```javascript
-export const CalibrationConfig = {
-    THRESHOLD_MIN: 2.0,              // Minimum temp change threshold (°C)
-    THRESHOLD_MAX: 15.0,             // Maximum temp change to consider (°C)
-    DROP_LARGE_THRESHOLD: 3.0,       // Large temperature drop threshold (°C)
-    SPIKE_WINDOW_SECONDS: 5,         // Spike detection window (seconds)
-    SPIKE_COOLDOWN_MS: 2000,         // Cooldown between spike detections (ms)
-    VALID_TEMP_MAX: 2000,            // Maximum valid temperature (°C)
-    NUM_TCS: 8,                      // Expected number of thermocouples
-    REFERENCE_UPDATE_INTERVAL: 20000, // Baseline update interval (ms)
-    TEMP_DROP_THRESHOLD: 0.75        // Minor temp drop to ignore (°C)
-};
-```
+### UART Settings
 
-**UART Settings:**
 ```javascript
 export const UART_CONFIG = {
-    PROBE_SILENCE_MS: 1500,          // Time before clearing pop effect (ms)
-    ZERO_RESEND_INTERVAL_MS: 500,    // Interval for resending '0' (ms)
-    ZERO_RESEND_TIMEOUT_MS: 10000    // Timeout for zero-ack loop (ms)
+    BAUDRATE: 115200,              // Serial baud rate
+    TIMEOUT: 2000,                 // File loading timeout (ms)
+    PROBE_SILENCE_MS: 1500,        // Time before clearing pop effect (ms)
+    ZERO_RESEND_INTERVAL_MS: 300,  // Interval for resending '0' (ms)
+    ZERO_RESEND_TIMEOUT_MS: 3000   // Timeout for zero-ack loop (ms)
 };
 ```
 
-### Logging
+### Logging Configuration
 
 Change log level in browser console:
+
 ```javascript
 window.setLogLevel('DEBUG');  // Verbose logging
 window.setLogLevel('INFO');   // Normal logging
@@ -365,99 +468,58 @@ window.setLogLevel('WARN');   // Quiet (default)
 window.setLogLevel('ERROR');  // Minimal logging
 ```
 
-## Technical Details
+## Serial Protocol
 
-### Serial Communication Protocol
+### Communication Settings
 
-**Baud Rate:** 115200  
-**Line Endings:** `\n` (newline)
+- **Baud Rate:** 115200
+- **Line Endings:** `\n` (newline)
 
-#### Outgoing Commands (Web App → MCU)
+### Outgoing Commands (Web App → MCU)
 
-- `status` - Request MCU state and file list
-- `<number>` - Select thermocouple by ID (e.g., `1`, `2`)
-- `measure` - Switch to measurement mode
-- `calibrate` - Switch to calibration mode
-- `SAVE_POSITIONS:<data>` - Save positions to CSV
-  - Format: `SAVE_POSITIONS:1,0,0,0;2,1,0,0;3,2,0,0`
-- `LOAD_POSITIONS` - Request positions from CSV
-- `FILE_SELECTED:<filename>` - Request file data
-  - Example: `FILE_SELECTED:2024-01-15.csv`
+| Command | Description | Example |
+|---------|-------------|---------|
+| `status` | Request MCU state and file list | `status` |
+| `<number>` | Select thermocouple by ID | `1`, `25` |
+| `measure` | Switch to measurement mode | `measure` |
+| `calibrate` | Switch to calibration mode | `calibrate` |
+| `SAVE_POSITIONS:<data>` | Save positions to CSV | `SAVE_POSITIONS:1,0,0,0;2,1,0,0` |
+| `LOAD_POSITIONS` | Request positions from CSV | `LOAD_POSITIONS` |
+| `FILE_SELECTED:<filename>` | Request file data | `FILE_SELECTED:2024-01-15.csv` |
 
-#### Incoming Messages (MCU → Web App)
+### Incoming Messages (MCU → Web App)
 
-- `SOFTWARE_INIT` - MCU initialisation complete
-- `Active TCs:[1,2,3,...]` - List of active thermocouple IDs
-- `CalibrationState` / `MeasureState` - Current MCU state
-- `FILES:file1.csv,file2.csv,...` - Available CSV files
-- `TC_CALIBRATE<id>: <temperature>` - Calibration temperature data
-  - Example: `TC_CALIBRATE1: 25.5`
-- `TC<id>: <temperature>` - Measurement temperature data
-  - Example: `TC1: 26.3`
-- `TC_Probe(<id>)` - Probe selection notification (triggers visual pop effect)
-  - Example: `TC_Probe(1)`
-- `TC_Probe<id>, Ref Data: <probe_temp>,<ref_temp>` - Selected TC details (deprecated format)
-  - Example: `TC_Probe1, Ref Data: 25.5,23.2`
-- `FILE_DATA:<line>` - File data line (CSV row)
-- `LOAD_POSITIONS:<data>` - Position data from CSV
-  - Format: `LOAD_POSITIONS:1,0,0,0;2,1,0,0;3,2,0,0`
+| Message | Description | Example |
+|---------|-------------|---------|
+| `SOFTWARE_INIT` | MCU initialization complete | `SOFTWARE_INIT` |
+| `Active TCs:[...]` | List of active thermocouple IDs | `Active TCs:[1,2,3,4,5]` |
+| `CalibrationState` | MCU in calibration mode | `CalibrationState` |
+| `MeasureState` | MCU in measurement mode | `MeasureState` |
+| `FILES:...` | Available CSV files | `FILES:file1.csv,file2.csv` |
+| `TC_CALIBRATE<id>: <temp>` | Calibration temperature data | `TC_CALIBRATE1: 25.5` |
+| `TC<id>: <temp>` | Measurement temperature data | `TC1: 26.3` |
+| `TC_Probe(<id>)` | Probe selection notification | `TC_Probe(1)` |
+| `FILE_DATA:<line>` | File data line (CSV row) | `FILE_DATA:10:30:15,25.5,26.1` |
+| `LOAD_POSITIONS:<data>` | Position data from CSV | `LOAD_POSITIONS:1,0,0,0;2,1,0,0` |
 
 ### Message Processing
 
-The application uses a queue-based processing system to handle high-frequency messages:
+The application uses a queue-based system for reliable message handling:
 
-1. **Reader Loop**: Continuously reads from serial port via UARTHelper
-2. **Line Parsing**: Splits incoming data by newlines
-3. **Queue System**: Adds lines to processing queue (max 1000 items)
-4. **Batch Processing**: Processes 50 lines at a time with yield to event loop
-5. **Overflow Protection**: Drops oldest messages if queue exceeds limit
-6. **Error Recovery**: Attempts to recover from buffer overruns
-7. **TC_Probe Authority**: Only TC_Probe messages from MCU trigger visual selection/pop effects
-8. **Probe Silence Monitoring**: Automatically clears pop effects when TC_Probe messages stop
-9. **Resend Loops**: Continuously resends selection commands until MCU acknowledges via TC_Probe
+1. **Reader Loop** - Continuously reads from serial port
+2. **Line Parsing** - Splits incoming data by newlines
+3. **Queue System** - Adds lines to processing queue (max 1000 items)
+4. **Batch Processing** - Processes 50 lines at a time
+5. **Overflow Protection** - Drops oldest messages if queue exceeds limit
+6. **TC_Probe Authority** - Only TC_Probe messages trigger visual effects
+7. **Auto-clear** - Pop effects clear automatically after silence timeout
 
-### Data Storage
-
-**LocalStorage Keys:**
-- `thermocouples`: JSON array of TC objects with positions and temperatures
-- `calibrationFinished`: Boolean flag for calibration state
-- `fileDataArray`: Historical temperature data for playback
-- `lastPort`: USB vendor/product IDs for auto-connect
-- `cameraState`: Camera position/orientation for 3D viewer
-- `logLevel`: Current logging level setting
-
-### 3D Rendering
-
-**Three.js Setup:**
-- Perspective camera (75° FOV)
-- WebGL renderer with antialiasing
-- Ambient + directional lighting
-- Grid and axes helpers
-- OrbitControls for interaction
-
-**Colour Interpolation:**
-- Linear interpolation between `coldColor` and `hotColor`
-- Based on normalised temperature: `(temp - tempMin) / (tempMax - tempMin)`
-- Opacity varies linearly with temperature
-- Proportional color boost during pop animation for selected TCs
-
-**Visual Selection System:**
-- Only TC_Probe messages from MCU trigger visual "pop" effects
-- Pop animation: delayed (150ms), one-time scale to 1.3x with brightness increase
-- Pop effect cleared automatically when TC_Probe messages stop (configurable silence threshold)
-- Dropdown and manual selection update UI but do not trigger pop until MCU confirms via TC_Probe
-- No pop animation during TC_CALIBRATE mode to avoid visual clutter
-
-**Performance:**
-- Single geometry instance shared by all TC cubes
-- Material updates only when temperature changes
-- Efficient matrix transformations for positioning
-
-## File Format
+## File Formats
 
 ### Position CSV (`position.csv`)
 
-Format:
+Stored on MCU SD card. Format:
+
 ```
 TC_ID,X,Y,Z
 1,0.0,0.0,0.0
@@ -467,126 +529,133 @@ TC_ID,X,Y,Z
 
 ### Temperature Data CSV (`YYYY-MM-DD.csv`)
 
-Format:
+Historical temperature recordings. Format:
+
 ```
 TIME,TC1_TEMP,TC2_TEMP,TC3_TEMP,...
-HH:MM:SS,25.5,26.1,24.8,...
-10:30:15,25.7,26.3,25.0,...
-10:30:20,26.0,26.5,25.2,...
+10:30:15,25.5,26.1,24.8,...
+10:30:20,25.7,26.3,25.0,...
+10:30:25,26.0,26.5,25.2,...
 ```
 
-- First column: Time (HH:MM:SS format)
-- Subsequent columns: Temperature values for each TC in order
-- Comma-separated values
-- No header row (time + temperatures only)
-
-## Browser Compatibility
-
-**Required:**
-- Web Serial API support (Chrome 89+, Edge 89+)
-- WebGL support
-- ES6 Modules support
-
-**Recommended:**
-- Chrome 89+ or Edge 89+ (best Web Serial API support)
-- Modern GPU for smooth 3D rendering
-
-## Dependencies
-
-- **Three.js v0.159.0**: 3D graphics library (loaded via CDN from jsdelivr)
-- **OrbitControls**: Camera controls (included in repository)
-- **Web Serial API**: Native browser API (no library needed)
-
-## Code Architecture
-
-The application follows a modular ES6 module structure with clear separation of concerns:
-
-### Module Organization
-
-**Core Modules:**
-- `main.js` - Application orchestration, UI management, serial communication handling
-- `config.js` - Centralized configuration exports (VIZ_CONFIG, CalibrationConfig, UART_CONFIG)
-- `logger.js` - Logging system with level filtering and localStorage persistence
-- `utils.js` - Shared utilities (formatTime, sleep, throttle)
-
-**Data Models:**
-- `thermocouple.js` - Thermocouple class with temperature tracking and update methods
-
-**Communication:**
-- `uart-helper.js` - Serial port wrapper with buffer management and line reading
-
-**3D Visualization:**
-- Visualization3D class in `main.js` - Three.js scene management and rendering
-
-### Key Design Patterns
-
-**Event-Driven Architecture:**
-- UI events trigger async handlers
-- Serial messages routed through centralized `processLine()` method
-- State changes propagate via method calls and UI updates
-
-**Authority Pattern:**
-- MCU has authority over visual selection via TC_Probe messages
-- Web app sends commands but waits for MCU confirmation before updating visuals
-- Continuous resend loops ensure reliable command acknowledgment
-
-**Throttling and Batching:**
-- Visual updates throttled to prevent render lag from high-frequency temperature data
-- Message queue batching prevents event loop blocking
-- Logger filters high-frequency repeated messages
-
-### Error Handling
-
-- Buffer overrun recovery in reader loop
-- Graceful degradation when serial port unavailable
-- Try-catch blocks around critical operations
-- User-friendly error messages in UI
-
-### Performance Optimisations
-
-- Queue-based message processing prevents blocking
-- Batch processing with event loop yielding
-- Shared geometries for 3D objects
-- Efficient temperature-to-colour calculations
-- Debounced file loading completion detection
+- **First column:** Time (HH:MM:SS format)
+- **Subsequent columns:** Temperature values for each TC in order
+- **Format:** Comma-separated values
+- **Header:** No header row (time + temperatures only)
 
 ## Troubleshooting
 
-### Serial Port Not Connecting
+### Serial Port Issues
+
+**Problem:** Serial port not connecting
+
+**Solutions:**
 - Ensure MCU is powered and connected via USB
-- Check that browser supports Web Serial API (Chrome 89+, Edge 89+)
-- Try refreshing the page and reconnecting
-- Check if another application is using the port
+- Check browser supports Web Serial API (Chrome 89+, Edge 89+)
+- Try refreshing page and reconnecting
+- Verify no other application is using the port
 
-### Visual Selection Not Working
+### Visual Selection Issues
+
+**Problem:** Visual selection not working
+
+**Solutions:**
 - Verify MCU is sending `TC_Probe(<id>)` messages
-- Check browser console for incoming message logs (set log level to DEBUG)
-- Ensure calibration mode is active (pop effect disabled in measurement mode by default)
-- Try manually selecting TC via dropdown and clicking "Select Thermocouple"
+- Check browser console for incoming messages (set log level to DEBUG)
+- Ensure calibration mode is active
+- Try manual selection via dropdown
 
-### Pop Effect Not Clearing
-- Pop effects automatically clear after PROBE_SILENCE_MS (default 1500ms) of no TC_Probe messages
-- Check UART_CONFIG settings in config.js if timeout seems wrong
-- Verify TC_Probe messages have stopped in browser console logs
+**Problem:** Pop effect not clearing
 
-### Buffer Overrun Errors
-- These are automatically handled by the queue system
-- If persistent, check MCU message frequency
-- Consider adjusting `MAX_QUEUE_SIZE` in main.js
-- Enable DEBUG logging to see queue statistics
+**Solutions:**
+- Wait for PROBE_SILENCE_MS timeout (default 1500ms)
+- Check UART_CONFIG settings in config.js
+- Verify TC_Probe messages have stopped in console logs
 
-### 3D Viewer Not Displaying
+### 3D Viewer Issues
+
+**Problem:** 3D viewer not displaying
+
+**Solutions:**
 - Check browser console for WebGL errors
 - Verify Three.js library loaded correctly from CDN
 - Ensure active thermocouples have position data
-- Try hard refresh (Ctrl+Shift+R) to clear cache
+- Try hard refresh (Ctrl+Shift+R)
+
+### Buffer Issues
+
+**Problem:** Buffer overrun errors
+
+**Solutions:**
+- Queue system handles these automatically
+- Check MCU message frequency if persistent
+- Consider adjusting MAX_QUEUE_SIZE in main.js
+- Enable DEBUG logging to see queue statistics
 
 ### File Loading Issues
+
+**Problem:** Files not loading
+
+**Solutions:**
 - Verify file exists on MCU SD card
 - Check file format matches expected CSV structure
 - Ensure MCU is in correct state for file operations
-- Look for FILE_DATA messages in browser console (DEBUG log level)
+- Look for FILE_DATA messages in console (DEBUG level)
+
+## Browser Compatibility
+
+### Requirements
+
+- **Web Serial API:** Chrome 89+, Edge 89+ (required)
+- **WebGL:** Modern GPU for 3D rendering
+- **ES6 Modules:** All modern browsers
+
+### Recommended
+
+- Chrome 89+ or Edge 89+ for best Web Serial API support
+- Dedicated GPU for smooth 3D rendering
+- 1920x1080 or higher resolution display
+
+## Dependencies
+
+| Dependency | Version | Source | Purpose |
+|------------|---------|--------|---------|
+| Three.js | v0.159.0 | CDN (jsdelivr) | 3D graphics library |
+| OrbitControls | - | Local (js/OrbitControls.js) | Camera controls |
+| Web Serial API | Native | Browser API | Serial communication |
+
+## Technical Details
+
+### Data Storage (LocalStorage)
+
+- `thermocouples` - TC objects with positions and temperatures
+- `calibrationFinished` - Calibration state flag
+- `fileDataArray` - Historical temperature data
+- `lastPort` - USB vendor/product IDs for auto-connect
+- `cameraState` - Camera position/orientation
+- `logLevel` - Current logging level
+
+### 3D Rendering Details
+
+**Scene Setup:**
+- Perspective camera (45° FOV)
+- WebGL renderer with antialiasing
+- Ambient + directional lighting
+- Grid and axes helpers
+- OrbitControls for interaction
+
+**Color Interpolation:**
+- Multi-stop gradient (cold → mid → hot)
+- Normalized temperature mapping
+- Opacity variation with temperature
+- Color boost during selection animation
+
+**Performance Optimizations:**
+- Shared geometry instances
+- Throttled visual updates
+- Efficient matrix transformations
+- Batch processing
 
 ---
 
-**Note:** The MCU-side code (`main.py`, `tc_manager.py`) runs on the microcontroller's SD card and is not part of this repository. This web application communicates with the MCU via Web Serial API.
+**Note:** MCU-side code in `V28/` folder runs on the microcontroller. This web application communicates with the MCU via Web Serial API.
