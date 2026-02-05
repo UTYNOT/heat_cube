@@ -79,11 +79,14 @@ Heat Cube Visualiser is an interactive web application for monitoring and calibr
 - Modern web browser with Web Serial API support (Chrome 89+, Edge 89+)
 - Microcontroller with thermocouple array connected via USB
 
-### Installation
+## Installation
 
 1. Clone or download this repository
 2. Open `index.html` in a modern web browser
 3. No build process or dependencies to install—runs directly in browser
+
+Optional (for copying SD card logs to local playback):
+- Install Node.js and run the SD card backup script in `js/server.js`
 
 ### First Time Setup
 
@@ -196,7 +199,7 @@ heat_cube/
 ├── TemperatureData/      # CSV files backed up from MCU
 │   └── *.csv             # Temperature data files (YYYY-MM-DD.csv format)
 │
-├── V28/                  # MCU-side code (MicroPython)
+├── V29/                  # MCU-side code (MicroPython)
 │   ├── main.py           # MCU main entry point
 │   ├── thermocouple.py   # MAX31855 driver
 │   ├── shift_register.py # 74HC595 shift register driver
@@ -479,13 +482,14 @@ window.setLogLevel('ERROR');  // Minimal logging
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `status` | Request MCU state and file list | `status` |
+| `status` | Request MCU state and active TCs | `status` |
 | `<number>` | Select thermocouple by ID | `1`, `25` |
 | `measure` | Switch to measurement mode | `measure` |
 | `calibrate` | Switch to calibration mode | `calibrate` |
-| `SAVE_POSITIONS:<data>` | Save positions to CSV | `SAVE_POSITIONS:1,0,0,0;2,1,0,0` |
+| `SAVE_POSITIONS_START:<count>:<ids>` | Begin position save session | `SAVE_POSITIONS_START:3:1,2,3` |
+| `SAVE_POSITION:<id>,<x>,<y>,<z>` | Send a single position | `SAVE_POSITION:1,0,0,0` |
+| `SAVE_POSITIONS_DONE` | Finish position save session | `SAVE_POSITIONS_DONE` |
 | `LOAD_POSITIONS` | Request positions from CSV | `LOAD_POSITIONS` |
-| `FILE_SELECTED:<filename>` | Request file data | `FILE_SELECTED:2024-01-15.csv` |
 
 ### Incoming Messages (MCU → Web App)
 
@@ -495,12 +499,12 @@ window.setLogLevel('ERROR');  // Minimal logging
 | `Active TCs:[...]` | List of active thermocouple IDs | `Active TCs:[1,2,3,4,5]` |
 | `CalibrationState` | MCU in calibration mode | `CalibrationState` |
 | `MeasureState` | MCU in measurement mode | `MeasureState` |
-| `FILES:...` | Available CSV files | `FILES:file1.csv,file2.csv` |
 | `TC_CALIBRATE<id>: <temp>` | Calibration temperature data | `TC_CALIBRATE1: 25.5` |
 | `TC<id>: <temp>` | Measurement temperature data | `TC1: 26.3` |
-| `TC_Probe(<id>)` | Probe selection notification | `TC_Probe(1)` |
-| `FILE_DATA:<line>` | File data line (CSV row) | `FILE_DATA:10:30:15,25.5,26.1` |
+| `Probe_Data<id>, Ref Data: <probeTemp>,<refTemp>` | Probe data for selected TC | `Probe_Data1, Ref Data: 25.3,24.8` |
 | `LOAD_POSITIONS:<data>` | Position data from CSV | `LOAD_POSITIONS:1,0,0,0;2,1,0,0` |
+| `REQUEST_ALL_POSITIONS` | MCU requests full resend | `REQUEST_ALL_POSITIONS` |
+| `REQUEST_POSITIONS:<ids>` | MCU requests missing IDs | `REQUEST_POSITIONS:4,6,7` |
 
 ### Message Processing
 
@@ -511,7 +515,7 @@ The application uses a queue-based system for reliable message handling:
 3. **Queue System** - Adds lines to processing queue (max 1000 items)
 4. **Batch Processing** - Processes 50 lines at a time
 5. **Overflow Protection** - Drops oldest messages if queue exceeds limit
-6. **TC_Probe Authority** - Only TC_Probe messages trigger visual effects
+6. **Probe_Data Authority** - Only Probe_Data messages trigger visual effects
 7. **Auto-clear** - Pop effects clear automatically after silence timeout
 
 ## File Formats
@@ -597,10 +601,9 @@ TIME,TC1_TEMP,TC2_TEMP,TC3_TEMP,...
 **Problem:** Files not loading
 
 **Solutions:**
-- Verify file exists on MCU SD card
+- Verify CSV files exist in `TemperatureData/`
 - Check file format matches expected CSV structure
-- Ensure MCU is in correct state for file operations
-- Look for FILE_DATA messages in console (DEBUG level)
+- Refresh the page to reload the file list
 
 ## Browser Compatibility
 
@@ -658,4 +661,4 @@ TIME,TC1_TEMP,TC2_TEMP,TC3_TEMP,...
 
 ---
 
-**Note:** MCU-side code in `V28/` folder runs on the microcontroller. This web application communicates with the MCU via Web Serial API.
+**Note:** MCU-side code in `V29/` folder runs on the microcontroller. This web application communicates with the MCU via Web Serial API.
